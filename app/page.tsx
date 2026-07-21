@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
-import SignOutButton from "@/components/SignOutButton";
+import { listConversations, getUserById } from "@/lib/db";
+import { ChatApp } from "@/components/ChatApp";
+
+export const dynamic = "force-dynamic";
 
 export default async function Home() {
   const session = await getSession();
@@ -11,18 +14,29 @@ export default async function Home() {
 
   if (!displayName || !username) redirect("/profile");
 
+  const me = getUserById(session.userId);
+  if (!me) redirect("/auth");
+
+  const rows = listConversations(me.id).map((r) => ({
+    id: r.id,
+    peer: {
+      id: r.peer_id,
+      displayName: r.peer_display_name,
+      username: r.peer_username,
+    },
+    lastText: r.last_text,
+    lastMessageAt: r.last_message_at,
+    createdAt: r.created_at,
+  }));
+
   return (
-    <main className="min-h-full flex items-center justify-center px-4">
-      <div className="w-full max-w-md text-center">
-        <p className="text-zinc-400 text-sm">Logged in as</p>
-        <h1 className="mt-2 text-4xl font-semibold tracking-tight">
-          Hello, {displayName}
-        </h1>
-        <p className="mt-3 text-zinc-400">@{username}</p>
-        <div className="mt-10">
-          <SignOutButton />
-        </div>
-      </div>
-    </main>
+    <ChatApp
+      me={{
+        id: me.id,
+        displayName,
+        username,
+      }}
+      initialConversations={rows}
+    />
   );
 }

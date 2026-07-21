@@ -2,10 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: light dark; }
+:root { color-scheme: dark; }
 html, body { height: 100%; }
 body {
   background: #0b0b10;
   color: #e8e8ea;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
+
+/* Thin, dark scrollbars */
+* { scrollbar-width: thin; scrollbar-color: #2a2a35 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #2a2a35; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #3a3a48; }
