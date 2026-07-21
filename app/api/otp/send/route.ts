@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
   }
 
-  const existing = getUserByEmail(email);
+  const existing = await getUserByEmail(email);
   const signupBlocked = purpose === "signup" && Boolean(existing);
   const signinBlocked = purpose === "signin" && !existing;
 
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   }
 
   const code = generateOtp();
-  createOtp(email, purpose, hashOtp(code), OTP_CONFIG.ttlMs);
+  await createOtp(email, purpose, hashOtp(code), OTP_CONFIG.ttlMs);
   await sendOtpEmail(email, code, purpose);
 
   const body: Record<string, unknown> = { ok: true };

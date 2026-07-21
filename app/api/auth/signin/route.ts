@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
   const email = parsed.data.email.toLowerCase();
-  const user = getUserByEmail(email);
+  const user = await getUserByEmail(email);
   const stored = user?.password_hash;
   const ok = stored ? await bcrypt.compare(parsed.data.password, stored) : false;
   if (!user || !stored || !ok) {

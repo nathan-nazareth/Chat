@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   if (trimmed.length < 2) {
     return NextResponse.json({ users: [] });
   }
-  const users = searchUsers(trimmed, auth.userId).map((u) => ({
+  const users = (await searchUsers(trimmed, auth.userId)).map((u) => ({
     id: u.id,
     displayName: u.display_name,
     username: u.username,

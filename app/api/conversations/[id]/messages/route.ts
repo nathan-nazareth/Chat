@@ -19,17 +19,17 @@ export async function GET(
   if (!Number.isInteger(conversationId)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-  if (!isConversationMember(conversationId, auth.userId)) {
+  if (!(await isConversationMember(conversationId, auth.userId))) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  const messages = listMessages(conversationId).map((m) => ({
+  const messages = (await listMessages(conversationId)).map((m) => ({
     id: m.id,
     senderId: m.sender_id,
     text: m.text,
     createdAt: m.created_at,
     isRead: Boolean(m.is_read),
   }));
-  markConversationRead(conversationId, auth.userId);
+  await markConversationRead(conversationId, auth.userId);
   return NextResponse.json({ messages });
 }
 
@@ -48,7 +48,7 @@ export async function POST(
   if (!Number.isInteger(conversationId)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-  if (!isConversationMember(conversationId, auth.userId)) {
+  if (!(await isConversationMember(conversationId, auth.userId))) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -61,7 +61,7 @@ export async function POST(
     );
   }
 
-  const m = createMessage(conversationId, auth.userId, parsed.data.text);
+  const m = await createMessage(conversationId, auth.userId, parsed.data.text);
   return NextResponse.json({
     message: {
       id: m.id,

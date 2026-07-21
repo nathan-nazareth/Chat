@@ -12,7 +12,7 @@ export async function requireUser(): Promise<Authed | Unauthed> {
       error: NextResponse.json({ error: "Not authenticated" }, { status: 401 }),
     };
   }
-  const user = getUserById(session.userId);
+  const user = await getUserById(session.userId);
   if (!user) {
     return {
       error: NextResponse.json({ error: "Not authenticated" }, { status: 401 }),

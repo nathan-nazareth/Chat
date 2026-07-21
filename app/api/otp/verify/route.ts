@@ -45,21 +45,21 @@ export async function POST(req: NextRequest) {
   const password = parsed.data.password;
   const email = rawEmail.toLowerCase();
 
-  const otp = findActiveOtp(email, purpose);
+  const otp = await findActiveOtp(email, purpose);
   if (!otp || otp.code_hash !== hashOtp(code)) {
     return NextResponse.json({ error: "Invalid or expired code" }, { status: 401 });
   }
 
-  let user = getUserByEmail(email);
+  let user = await getUserByEmail(email);
   if (purpose === "signup") {
-    if (!user) user = createUser(email);
-    markEmailVerified(user.id);
+    if (!user) user = await createUser(email);
+    await markEmailVerified(user.id);
     if (!password) {
       return NextResponse.json({ ok: true, stage: "need_password" });
     }
-    consumeOtp(otp.id);
+    await consumeOtp(otp.id);
     const hash = await bcrypt.hash(password, 12);
-    setPasswordHash(user.id, hash);
+    await setPasswordHash(user.id, hash);
   } else {
     if (!user || !user.password_hash) {
       return NextResponse.json(
@@ -67,10 +67,10 @@ export async function POST(req: NextRequest) {
         { status: 404 }
       );
     }
-    consumeOtp(otp.id);
+    await consumeOtp(otp.id);
   }
 
-  user = getUserByEmail(email)!;
+  user = (await getUserByEmail(email))!;
   const session = await getSession();
   session.userId = user.id;
   session.email = user.email;

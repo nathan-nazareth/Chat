@@ -12,7 +12,7 @@ export async function GET() {
   const auth = await requireUser();
   if (auth.error) return auth.error;
 
-  const rows = listConversations(auth.userId).map((r) => ({
+  const rows = (await listConversations(auth.userId)).map((r) => ({
     id: r.id,
     peer: {
       id: r.peer_id,
@@ -43,14 +43,14 @@ export async function POST(req: NextRequest) {
   if (peerId === auth.userId) {
     return NextResponse.json({ error: "Cannot chat with yourself" }, { status: 400 });
   }
-  const peer = getUserById(peerId);
+  const peer = await getUserById(peerId);
   if (!peer || !peer.profile_completed_at) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
   const conv =
-    findConversationBetween(auth.userId, peerId) ??
-    createConversation(auth.userId, peerId);
+    (await findConversationBetween(auth.userId, peerId)) ??
+    (await createConversation(auth.userId, peerId));
 
   return NextResponse.json({
     conversation: {

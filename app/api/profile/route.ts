@@ -27,18 +27,18 @@ export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session.userId) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
-  const me = getUserById(session.userId);
+  const me = await getUserById(session.userId);
   if (!me) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   if (me.profile_completed_at) {
     return NextResponse.json({ error: "Profile already set" }, { status: 409 });
   }
 
-  const taken = getUserByUsername(parsed.data.username);
+  const taken = await getUserByUsername(parsed.data.username);
   if (taken && taken.id !== me.id) {
     return NextResponse.json({ error: "Username already taken" }, { status: 409 });
   }
 
-  setProfile(me.id, parsed.data.displayName, parsed.data.username);
+  await setProfile(me.id, parsed.data.displayName, parsed.data.username);
   session.displayName = parsed.data.displayName;
   session.username = parsed.data.username;
   session.pendingSignupEmail = undefined;

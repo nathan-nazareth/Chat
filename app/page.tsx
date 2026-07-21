@@ -14,10 +14,10 @@ export default async function Home() {
 
   if (!displayName || !username) redirect("/profile");
 
-  const me = getUserById(session.userId);
+  const me = await getUserById(session.userId);
   if (!me) redirect("/auth");
 
-  const rows = listConversations(me.id).map((r) => ({
+  const rows = (await listConversations(me.id)).map((r) => ({
     id: r.id,
     peer: {
       id: r.peer_id,
