@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { getUserById } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import ProfileForm from "@/components/ProfileForm";
 
@@ -7,9 +6,7 @@ export default async function ProfilePage() {
   const session = await getSession();
   if (!session.userId) redirect("/auth");
 
-  const user = getUserById(session.userId);
-  if (!user) redirect("/auth");
-  if (user.profile_completed_at) redirect("/");
+  if (session.displayName && session.username) redirect("/");
 
   return (
     <main className="min-h-full flex items-center justify-center px-4">

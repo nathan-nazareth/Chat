@@ -3,8 +3,10 @@ import { cookies } from "next/headers";
 
 export type SessionData = {
   userId?: number;
-  // Set after OTP is verified but before password (signup) is set.
   pendingSignupEmail?: string;
+  displayName?: string;
+  username?: string;
+  email?: string;
 };
 
 export const sessionOptions: SessionOptions = {

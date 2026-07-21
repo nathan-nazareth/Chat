@@ -259,10 +259,12 @@ function OtpStep(props: {
       </p>
       {props.info && <p className="text-xs text-emerald-400">{props.info}</p>}
       {props.devCode && (
-        <p className="text-xs text-amber-300">
-          Dev mode (no email configured). Your code is{" "}
-          <span className="font-mono font-semibold">{props.devCode}</span>.
-        </p>
+        <div className="rounded-xl border border-zinc-700 bg-zinc-900 p-4 text-center">
+          <p className="text-xs text-zinc-400 mb-1">Your verification code</p>
+          <p className="font-mono text-2xl font-bold tracking-[0.3em] text-emerald-400">
+            {props.devCode}
+          </p>
+        </div>
       )}
       <input
         inputMode="numeric"

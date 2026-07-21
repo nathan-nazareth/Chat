@@ -39,6 +39,8 @@ export async function POST(req: NextRequest) {
   }
 
   setProfile(me.id, parsed.data.displayName, parsed.data.username);
+  session.displayName = parsed.data.displayName;
+  session.username = parsed.data.username;
   session.pendingSignupEmail = undefined;
   await session.save();
   return NextResponse.json({ ok: true });

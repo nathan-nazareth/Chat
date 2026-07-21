@@ -41,6 +41,9 @@ export async function POST(req: NextRequest) {
 
   const session = await getSession();
   session.userId = user.id;
+  session.email = user.email;
+  if (user.display_name) session.displayName = user.display_name;
+  if (user.username) session.username = user.username;
   if (!user.profile_completed_at) session.pendingSignupEmail = user.email;
   await session.save();
 
