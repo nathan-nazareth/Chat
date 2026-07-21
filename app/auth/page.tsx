@@ -61,7 +61,6 @@ export default function AuthPage() {
       if (!res.ok) throw new Error(data.error || "Invalid code");
       if (data.stage === "need_password") {
         setStep({ name: "password", mode: "signup" });
-        setCode("");
         return;
       }
       finishAuth();

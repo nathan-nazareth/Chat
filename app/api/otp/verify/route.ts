@@ -49,7 +49,6 @@ export async function POST(req: NextRequest) {
   if (!otp || otp.code_hash !== hashOtp(code)) {
     return NextResponse.json({ error: "Invalid or expired code" }, { status: 401 });
   }
-  consumeOtp(otp.id);
 
   let user = getUserByEmail(email);
   if (purpose === "signup") {
@@ -58,6 +57,7 @@ export async function POST(req: NextRequest) {
     if (!password) {
       return NextResponse.json({ ok: true, stage: "need_password" });
     }
+    consumeOtp(otp.id);
     const hash = await bcrypt.hash(password, 12);
     setPasswordHash(user.id, hash);
   } else {
@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
         { status: 404 }
       );
     }
+    consumeOtp(otp.id);
   }
 
   user = getUserByEmail(email)!;
