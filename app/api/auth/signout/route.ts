@@ -8,9 +8,15 @@ export async function POST() {
     const session = await getSession();
     await session.destroy();
     console.log("[INFO] [auth/signout] session destroyed");
-    return NextResponse.json({ ok: true });
+    return NextResponse.json(
+      { ok: true },
+      { headers: { "Cache-Control": "no-store" } }
+    );
   } catch (error) {
     console.error("[ERROR] [auth/signout] failed:", error);
-    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
 }

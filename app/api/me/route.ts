@@ -8,8 +8,10 @@ export async function GET() {
   try {
     const session = await getSession();
     if (!session.userId) {
-      console.log("[INFO] [me] no session");
-      return NextResponse.json({ user: null });
+      return NextResponse.json(
+        { user: null },
+        { headers: { "Cache-Control": "no-store" } }
+      );
     }
     const user = await getUserById(session.userId);
     if (!user) {
@@ -19,19 +21,28 @@ export async function GET() {
       } catch (destroyErr) {
         console.error("[ERROR] [me] session destroy failed:", destroyErr);
       }
-      return NextResponse.json({ user: null });
+      return NextResponse.json(
+        { user: null },
+        { headers: { "Cache-Control": "no-store" } }
+      );
     }
-    return NextResponse.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        displayName: user.display_name,
-        username: user.username,
-        profileCompleted: Boolean(user.profile_completed_at),
+    return NextResponse.json(
+      {
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.display_name,
+          username: user.username,
+          profileCompleted: Boolean(user.profile_completed_at),
+        },
       },
-    });
+      { headers: { "Cache-Control": "no-store" } }
+    );
   } catch (error) {
     console.error("[ERROR] [me] unhandled error:", error);
-    return NextResponse.json({ user: null }, { status: 500 });
+    return NextResponse.json(
+      { user: null },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
 }
