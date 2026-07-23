@@ -1,13 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { searchAllMessages } from "@/lib/db";
+import { take } from "@/lib/rateLimit";
 
 export const dynamic = "force-dynamic";
+
+const RL_IP_LIMIT = 60;
+const RL_WINDOW_MS = 10 * 60 * 1000;
+
+function clientIp(req: NextRequest): string {
+  return req.headers.get("x-real-ip") || req.ip || "unknown";
+}
 
 export async function GET(req: NextRequest) {
   try {
     const auth = await requireUser();
     if (auth.error) return auth.error;
+
+    const ip = clientIp(req);
+    if (!(await take(`msg-search:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS))) {
+      return NextResponse.json(
+        { error: "Too many requests. Try again later." },
+        { status: 429 }
+      );
+    }
 
     const url = new URL(req.url);
     const q = url.searchParams.get("q")?.trim() || "";

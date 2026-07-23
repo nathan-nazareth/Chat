@@ -69,6 +69,8 @@ export function ConversationView({
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const [serverSearchResults, setServerSearchResults] = useState<ChatMessage[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -276,23 +278,33 @@ export function ConversationView({
     }
   }
 
+  /* ---- Display messages: server results during search, full list otherwise ---- */
+  const displayMessages = useMemo(
+    () => serverSearchResults ?? messages,
+    [serverSearchResults, messages]
+  );
+
   /* ---- Search logic ---- */
   const matchingMessageIds = useMemo(() => {
+    if (serverSearchResults) return null;
     if (!searchQuery.trim()) return null;
     const q = searchQuery.toLowerCase();
     const ids = new Set<number>();
-    for (const m of messages) {
+    for (const m of displayMessages) {
       if (m.text.toLowerCase().includes(q)) ids.add(m.id);
     }
     return ids;
-  }, [messages, searchQuery]);
+  }, [displayMessages, searchQuery, serverSearchResults]);
 
   const matchIds = useMemo(() => {
+    if (serverSearchResults) {
+      return displayMessages.map((m) => m.id);
+    }
     if (!matchingMessageIds) return [];
-    return messages
+    return displayMessages
       .filter((m) => matchingMessageIds.has(m.id))
       .map((m) => m.id);
-  }, [messages, matchingMessageIds]);
+  }, [displayMessages, matchingMessageIds, serverSearchResults]);
 
   useEffect(() => {
     setActiveMatchIndex(0);
@@ -324,7 +336,40 @@ export function ConversationView({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [showSearch]);
 
-  /* ---- Memoised grouped render data ---- */
+  /* ---- Server-side search fetch ---- */
+  useEffect(() => {
+    if (!showSearch || !searchQuery.trim()) {
+      setServerSearchResults(null);
+      return;
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const url = new URL(`/api/conversations/${conversation.id}/messages`, window.location.origin);
+    url.searchParams.set("q", searchQuery);
+    setSearchLoading(true);
+
+    fetch(url.toString(), {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) {
+          setServerSearchResults((data.messages ?? []) as ChatMessage[]);
+          setSearchLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSearchLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [showSearch, searchQuery, conversation.id]);
+
   const renderItems = useMemo(() => {
     type Item =
       | { kind: "separator"; date: string; key: string }
@@ -332,8 +377,8 @@ export function ConversationView({
     const items: Item[] = [];
     let lastDate: string | null = null;
 
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i];
+    for (let i = 0; i < displayMessages.length; i++) {
+      const m = displayMessages[i];
       const dateLabel = formatDateSeparator(m.createdAt);
       if (dateLabel !== lastDate) {
         items.push({ kind: "separator", date: dateLabel, key: `d-${dateLabel}` });
@@ -342,12 +387,19 @@ export function ConversationView({
       items.push({
         kind: "message",
         msg: m,
-        showTime: isGroupEnd(messages, i),
+        showTime: isGroupEnd(displayMessages, i),
         key: m.id,
       });
     }
     return items;
-  }, [messages]);
+  }, [displayMessages]);
+
+  const searchEmpty = useMemo(() => {
+    if (!showSearch) return false;
+    if (searchLoading) return false;
+    if (!searchQuery.trim()) return false;
+    return displayMessages.length === 0;
+  }, [showSearch, searchLoading, searchQuery, displayMessages]);
 
   return (
     <>
@@ -483,7 +535,13 @@ export function ConversationView({
               </svg>
             </button>
           </div>
-          {searchQuery.trim() && matchIds.length === 0 && (
+          {searchLoading && (
+            <div className="flex items-center justify-center gap-1.5 mt-1.5">
+              <div className="w-3 h-3 border-2 border-zinc-600/30 border-t-zinc-400 rounded-full animate-spin" />
+              <span className="text-xs text-zinc-500">Searching…</span>
+            </div>
+          )}
+          {searchEmpty && (
             <p className="text-xs text-zinc-500 mt-1.5 text-center">No messages match &quot;{searchQuery}&quot;</p>
           )}
         </div>
@@ -514,7 +572,7 @@ export function ConversationView({
               <span className="text-sm">Couldn&apos;t load messages. Retrying...</span>
             </div>
           </div>
-        ) : messages.length === 0 ? (
+        ) : !showSearch && messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center animate-fade-in">
             <div className="relative mb-5">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent/15 to-purple-500/15 border border-accent/15 grid place-items-center">
@@ -548,8 +606,9 @@ export function ConversationView({
               const { msg, showTime } = item;
               if (matchingMessageIds && !matchingMessageIds.has(msg.id)) return null;
               const mine = msg.senderId === meId;
-              const isActiveMatch =
-                matchingMessageIds && matchIds[activeMatchIndex] === msg.id;
+              const isActiveMatch = serverSearchResults
+                ? matchIds[activeMatchIndex] === msg.id
+                : matchingMessageIds && matchIds[activeMatchIndex] === msg.id;
               return (
                 <div
                   key={msg.id}
