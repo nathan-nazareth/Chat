@@ -66,6 +66,10 @@ export function ConversationView({
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const forceScrollRef = useRef(true);
@@ -265,6 +269,54 @@ export function ConversationView({
     }
   }
 
+  /* ---- Search logic ---- */
+  const matchingMessageIds = useMemo(() => {
+    if (!searchQuery.trim()) return null;
+    const q = searchQuery.toLowerCase();
+    const ids = new Set<number>();
+    for (const m of messages) {
+      if (m.text.toLowerCase().includes(q)) ids.add(m.id);
+    }
+    return ids;
+  }, [messages, searchQuery]);
+
+  const matchIds = useMemo(() => {
+    if (!matchingMessageIds) return [];
+    return messages
+      .filter((m) => matchingMessageIds.has(m.id))
+      .map((m) => m.id);
+  }, [messages, matchingMessageIds]);
+
+  useEffect(() => {
+    setActiveMatchIndex(0);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!showSearch || !searchQuery.trim() || matchIds.length === 0) return;
+    const el = document.querySelector(`[data-mid="${matchIds[activeMatchIndex]}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [activeMatchIndex, showSearch, searchQuery, matchIds]);
+
+  useEffect(() => {
+    if (showSearch && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [showSearch]);
+
+  useEffect(() => {
+    if (!showSearch) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setShowSearch(false);
+        setSearchQuery("");
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [showSearch]);
+
   /* ---- Memoised grouped render data ---- */
   const renderItems = useMemo(() => {
     type Item =
@@ -315,7 +367,120 @@ export function ConversationView({
             </p>
           )}
         </div>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={() => {
+            setShowSearch((prev) => !prev);
+            if (!showSearch) setSearchQuery("");
+          }}
+          className={`rounded-lg min-w-[44px] min-h-[44px] p-2.5 transition-colors flex items-center justify-center ${
+            showSearch
+              ? "bg-accent/15 text-accent"
+              : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
+          }`}
+          aria-label={showSearch ? "Close search" : "Search messages"}
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+        </button>
       </header>
+
+      {/* Search Bar */}
+      {showSearch && (
+        <div className="px-4 py-2.5 border-b border-zinc-800/60 bg-surface-base/80 backdrop-blur-sm">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+              </svg>
+              <input
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                      setActiveMatchIndex((prev) =>
+                        prev > 0 ? prev - 1 : Math.max(matchIds.length - 1, 0)
+                      );
+                    } else {
+                      setActiveMatchIndex((prev) =>
+                        prev < matchIds.length - 1 ? prev + 1 : 0
+                      );
+                    }
+                  }
+                }}
+                placeholder="Search messages..."
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="search"
+                type="search"
+                style={{ fontSize: "16px" }}
+                className="w-full bg-zinc-900/60 border border-zinc-800/60 rounded-lg pl-9 pr-3 py-2 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-accent/30 transition-colors"
+              />
+            </div>
+            {matchIds.length > 0 && (
+              <span className="text-xs text-zinc-500 tabular-nums whitespace-nowrap">
+                {activeMatchIndex + 1}
+                <span className="text-zinc-600">/</span>
+                {matchIds.length}
+              </span>
+            )}
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveMatchIndex((prev) =>
+                    prev > 0 ? prev - 1 : Math.max(matchIds.length - 1, 0)
+                  )
+                }
+                disabled={searchQuery.trim() === "" || matchIds.length === 0}
+                className="rounded-lg min-w-[36px] min-h-[36px] p-2 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                aria-label="Previous match"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveMatchIndex((prev) =>
+                    prev < matchIds.length - 1 ? prev + 1 : 0
+                  )
+                }
+                disabled={searchQuery.trim() === "" || matchIds.length === 0}
+                className="rounded-lg min-w-[36px] min-h-[36px] p-2 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                aria-label="Next match"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setShowSearch(false);
+                setSearchQuery("");
+              }}
+              className="rounded-lg min-w-[36px] min-h-[36px] p-2 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors"
+              aria-label="Close search"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          {searchQuery.trim() && matchIds.length === 0 && (
+            <p className="text-xs text-zinc-500 mt-1.5 text-center">No messages match &quot;{searchQuery}&quot;</p>
+          )}
+        </div>
+      )}
 
       {/* Messages */}
       <div
@@ -362,6 +527,7 @@ export function ConversationView({
           <div className="space-y-0.5">
             {renderItems.map((item) => {
               if (item.kind === "separator") {
+                if (matchingMessageIds) return null;
                 return (
                   <div key={item.key} className="flex items-center gap-3 py-4">
                     <div className="flex-1 h-px bg-zinc-800/60" />
@@ -373,17 +539,21 @@ export function ConversationView({
                 );
               }
               const { msg, showTime } = item;
+              if (matchingMessageIds && !matchingMessageIds.has(msg.id)) return null;
               const mine = msg.senderId === meId;
+              const isActiveMatch =
+                matchingMessageIds && matchIds[activeMatchIndex] === msg.id;
               return (
                 <div
                   key={msg.id}
+                  data-mid={msg.id}
                   className={`flex ${mine ? "justify-end" : "justify-start"} ${
                     showTime ? "mb-3" : "mb-0.5"
                   }`}
                 >
                   <div className="max-w-[78%] sm:max-w-[68%]">
                     <div
-                      className={`px-3.5 py-2 text-sm whitespace-pre-wrap break-words ${
+                      className={`px-3.5 py-2 text-sm whitespace-pre-wrap break-words transition-all duration-200 ${
                         mine
                           ? `bg-gradient-to-br from-accent to-indigo-600 text-white ${
                               showTime ? "rounded-2xl rounded-br-md" : "rounded-2xl"
@@ -391,9 +561,17 @@ export function ConversationView({
                           : `bg-zinc-800/80 text-zinc-100 border border-zinc-700/40 ${
                               showTime ? "rounded-2xl rounded-bl-md" : "rounded-2xl"
                             }`
+                      } ${
+                        isActiveMatch
+                          ? "ring-2 ring-accent shadow-glow-lg scale-[1.02]"
+                          : ""
                       }`}
                     >
-                      {msg.text}
+                      {searchQuery.trim() ? (
+                        <HighlightedText text={msg.text} query={searchQuery} />
+                      ) : (
+                        msg.text
+                      )}
                     </div>
                     {showTime && (
                       <p
@@ -478,6 +656,32 @@ export function ConversationView({
           </p>
         )}
       </form>
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Highlighted text                                                   */
+/* ------------------------------------------------------------------ */
+
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  if (!query.trim()) return <>{text}</>;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === query.toLowerCase() ? (
+          <mark
+            key={i}
+            className="bg-amber-400/30 text-inherit rounded-sm px-0.5"
+          >
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
     </>
   );
 }

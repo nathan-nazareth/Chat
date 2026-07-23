@@ -22,6 +22,7 @@ export default function AuthPage() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [devCode, setDevCode] = useState<string | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const actionInFlightRef = useRef(false);
 
   // Bounce signed-in users to the home/profile route immediately so visiting
@@ -32,13 +33,18 @@ export default function AuthPage() {
     (async () => {
       try {
         const res = await fetch("/api/me", { cache: "no-store" });
-        if (cancelled || !res.ok) return;
-        const data = await res.json().catch(() => null);
-        if (data?.user) {
-          router.replace(data.user.profileCompleted ? "/" : "/profile");
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (data?.user) {
+            router.replace(data.user.profileCompleted ? "/" : "/profile");
+            return;
+          }
         }
       } catch {
         // ignore — fall through to render the form
+      } finally {
+        if (!cancelled) setSessionChecked(true);
       }
     })();
     return () => {
@@ -168,6 +174,15 @@ export default function AuthPage() {
 
   return (
     <main className="min-h-full flex items-center justify-center px-4 py-12">
+      {!sessionChecked ? (
+        // Brief loader while we check /api/me to see whether to bounce
+        // an already-signed-in user away. Avoids a flash of the form
+        // before the redirect fires.
+        <div
+          className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-purple-500 grid place-items-center shadow-glow-lg animate-pulse"
+          aria-label="Loading"
+        />
+      ) : (
       <div className="w-full max-w-sm animate-fade-in">
         {/* Logo & Header */}
         <div className="text-center mb-8">
@@ -312,6 +327,7 @@ export default function AuthPage() {
           </p>
         )}
       </div>
+      )}
     </main>
   );
 }
