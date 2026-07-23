@@ -636,6 +636,70 @@ export async function markRead(
   return n(rs.rowsAffected);
 }
 
+export async function searchMessagesInConversation(
+  conversationId: number,
+  query: string,
+  limit = 100
+): Promise<MessageRow[]> {
+  await ensureSchema();
+  if (!query.trim()) return [];
+  const q = query.trim().toLowerCase().replace(/[\\%_]/g, (m) => "\\" + m);
+  const like = `%${q}%`;
+  const rs = await getClient().execute({
+    sql: `SELECT * FROM messages
+          WHERE conversation_id = ? AND LOWER(text) LIKE ? ESCAPE '\\'
+          ORDER BY created_at DESC
+          LIMIT ?`,
+    args: [conversationId, like, limit],
+  });
+  return rs.rows.map((r) => {
+    const row = r as unknown as MessageRow;
+    return {
+      ...row,
+      id: n(row.id),
+      conversation_id: n(row.conversation_id),
+      sender_id: n(row.sender_id),
+      is_read: n(row.is_read),
+    };
+  });
+}
+
+export async function searchAllMessages(
+  userId: number,
+  query: string,
+  limit = 50
+): Promise<(MessageRow & { peer_id: number; peer_display_name: string | null; peer_username: string | null })[]> {
+  await ensureSchema();
+  if (!query.trim()) return [];
+  const q = query.trim().toLowerCase().replace(/[\\%_]/g, (m) => "\\" + m);
+  const like = `%${q}%`;
+  const rs = await getClient().execute({
+    sql: `SELECT m.*,
+            CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END AS peer_id,
+            u.display_name AS peer_display_name,
+            u.username AS peer_username
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          JOIN users u ON u.id = CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END
+          WHERE (c.user_a_id = ? OR c.user_b_id = ?)
+            AND LOWER(m.text) LIKE ? ESCAPE '\\'
+          ORDER BY m.created_at DESC
+          LIMIT ?`,
+    args: [userId, userId, userId, userId, like, limit],
+  });
+  return rs.rows.map((r) => {
+    const row = r as unknown as MessageRow & { peer_id: number; peer_display_name: string | null; peer_username: string | null };
+    return {
+      ...row,
+      id: n(row.id),
+      conversation_id: n(row.conversation_id),
+      sender_id: n(row.sender_id),
+      peer_id: n(row.peer_id),
+      is_read: n(row.is_read),
+    };
+  });
+}
+
 export async function createMessage(
   conversationId: number,
   senderId: number,

@@ -100,6 +100,7 @@ export function ConversationView({
 
     const controller = new AbortController();
     let pollTimeout: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveFailures = 0;
 
     function mergeMessages(prev: ChatMessage[], server: ChatMessage[]): ChatMessage[] {
       const map = new Map<number, ChatMessage>();
@@ -163,24 +164,30 @@ export function ConversationView({
 
     async function refresh(initial: boolean) {
       if (document.visibilityState === "hidden") {
-        pollTimeout = setTimeout(() => refresh(initial), 4000);
+        pollTimeout = setTimeout(() => refresh(initial), 4_000);
         return;
       }
       const server = await fetchMessages();
       if (cancelled) return;
       if (server === null) {
+        consecutiveFailures++;
         if (initial) {
           setError("Couldn't load messages");
           setLoading(false);
         }
-      } else {
-        setMessages((prev) => mergeMessages(prev, server));
-        setError((current) =>
-          current === "Couldn't load messages" ? null : current
-        );
-        setLoading(false);
+        // Exponential backoff on persistent errors: 1s, 2s, 4s, ..., 30s.
+        // Without this, a 500 storm hammers the server every 4s forever.
+        const delay = Math.min(30_000, 1_000 * 2 ** Math.min(consecutiveFailures, 5));
+        if (!cancelled) pollTimeout = setTimeout(() => refresh(false), delay);
+        return;
       }
-      if (!cancelled) pollTimeout = setTimeout(() => refresh(false), 4000);
+      consecutiveFailures = 0;
+      setMessages((prev) => mergeMessages(prev, server));
+      setError((current) =>
+        current === "Couldn't load messages" ? null : current
+      );
+      setLoading(false);
+      if (!cancelled) pollTimeout = setTimeout(() => refresh(false), 4_000);
     }
     void markRead();
     void refresh(true);

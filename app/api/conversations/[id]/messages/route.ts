@@ -5,12 +5,13 @@ import {
   createMessage,
   isConversationMember,
   listMessages,
+  searchMessagesInConversation,
 } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
@@ -24,7 +25,17 @@ export async function GET(
     if (!(await isConversationMember(conversationId, auth.userId))) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    const messages = await listMessages(conversationId);
+
+    const url = new URL(req.url);
+    const q = url.searchParams.get("q")?.trim() || "";
+
+    let messages;
+    if (q) {
+      messages = await searchMessagesInConversation(conversationId, q);
+    } else {
+      messages = await listMessages(conversationId);
+    }
+
     return NextResponse.json({
       messages: messages.map((m) => ({
         id: m.id,
