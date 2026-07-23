@@ -4,11 +4,13 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Chat",
     short_name: "Chat",
-    description: "A free, web-based chat app",
+    description: "A simple, beautiful chat application",
     start_url: "/",
+    scope: "/",
     display: "standalone",
-    background_color: "#0b141a",
-    theme_color: "#0b141a",
+    orientation: "portrait",
+    background_color: "#0a0a0c",
+    theme_color: "#0a0a0c",
     icons: [
       { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "maskable" },
       { src: "/favicon.ico", sizes: "32x32", type: "image/x-icon" },

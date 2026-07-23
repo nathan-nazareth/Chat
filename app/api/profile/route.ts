@@ -36,69 +36,69 @@ export async function POST(req: NextRequest) {
 
     const ip = clientIp(req);
     if (!(await take(`profile:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS))) {
-    return NextResponse.json(
-      { error: "Too many requests. Try again later." },
-      { status: 429 }
-    );
-  }
+      return NextResponse.json(
+        { error: "Too many requests. Try again later." },
+        { status: 429 }
+      );
+    }
 
-  const json = await req.json().catch(() => null);
-  const parsed = Body.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message || "Invalid input" },
-      { status: 400 }
-    );
-  }
+    const json = await req.json().catch(() => null);
+    const parsed = Body.safeParse(json);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.issues[0]?.message || "Invalid input" },
+        { status: 400 }
+      );
+    }
 
-  const me = await getUserById(session.userId);
-  if (!me) {
-    await session.destroy();
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
-  if (me.profile_completed_at) {
-    return NextResponse.json({ error: "Profile already set" }, { status: 409 });
-  }
-  // Profiles can only be finalized once a password is on file (see
-  // lib/db.ts:setProfile). Surface a clear error so the UI can react,
-  // instead of the misleading "Profile already set" that an empty UPDATE
-  // would otherwise produce.
-  if (!me.password_hash) {
-    return NextResponse.json(
-      { error: "Set your password before completing your profile" },
-      { status: 409 }
-    );
-  }
-
-  const taken = await getUserByUsername(parsed.data.username);
-  if (taken && taken.id !== me.id) {
-    return NextResponse.json({ error: "Username already taken" }, { status: 409 });
-  }
-
-  try {
-    const updated = await setProfile(me.id, parsed.data.displayName, parsed.data.username);
-    if (!updated) {
+    const me = await getUserById(session.userId);
+    if (!me) {
+      await session.destroy();
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+    if (me.profile_completed_at) {
       return NextResponse.json({ error: "Profile already set" }, { status: 409 });
     }
-  } catch (err) {
-    // Race: another request claimed this username between the check and the
-    // write. SQLite enforces the UNIQUE constraint; surface a clean 409 instead
-    // of a generic 500.
-    if (err instanceof Error && /UNIQUE/i.test(err.message)) {
+    // Profiles can only be finalized once a password is on file (see
+    // lib/db.ts:setProfile). Surface a clear error so the UI can react,
+    // instead of the misleading "Profile already set" that an empty UPDATE
+    // would otherwise produce.
+    if (!me.password_hash) {
+      return NextResponse.json(
+        { error: "Set your password before completing your profile" },
+        { status: 409 }
+      );
+    }
+
+    const taken = await getUserByUsername(parsed.data.username);
+    if (taken && taken.id !== me.id) {
       return NextResponse.json({ error: "Username already taken" }, { status: 409 });
     }
-    throw err;
-  }
-  session.displayName = parsed.data.displayName;
-  session.username = parsed.data.username;
-  session.profileCompleted = true;
-  try {
-    await session.save();
-  } catch (saveErr) {
-    console.error("[ERROR] [profile] session save failed:", saveErr);
-    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
-  }
-  return NextResponse.json({ ok: true });
+
+    try {
+      const updated = await setProfile(me.id, parsed.data.displayName, parsed.data.username);
+      if (!updated) {
+        return NextResponse.json({ error: "Profile already set" }, { status: 409 });
+      }
+    } catch (err) {
+      // Race: another request claimed this username between the check and the
+      // write. SQLite enforces the UNIQUE constraint; surface a clean 409 instead
+      // of a generic 500.
+      if (err instanceof Error && /UNIQUE/i.test(err.message)) {
+        return NextResponse.json({ error: "Username already taken" }, { status: 409 });
+      }
+      throw err;
+    }
+    session.displayName = parsed.data.displayName;
+    session.username = parsed.data.username;
+    session.profileCompleted = true;
+    try {
+      await session.save();
+    } catch (saveErr) {
+      console.error("[ERROR] [profile] session save failed:", saveErr);
+      return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+    }
+    return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("[ERROR] [profile] unhandled error:", error);
     return NextResponse.json({ error: "Something went wrong." }, { status: 500 });

@@ -8,17 +8,25 @@ export async function POST(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const auth = await requireUser();
-  if (auth.error) return auth.error;
+  try {
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
 
-  const conversationId = Number(params.id);
-  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
-    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-  }
-  if (!(await isConversationMember(conversationId, auth.userId))) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+    const conversationId = Number(params.id);
+    if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+    if (!(await isConversationMember(conversationId, auth.userId))) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
-  const marked = await markRead(conversationId, auth.userId);
-  return NextResponse.json({ ok: true, marked });
+    const marked = await markRead(conversationId, auth.userId);
+    return NextResponse.json({ ok: true, marked });
+  } catch (error) {
+    console.error("[ERROR] [conversations/read POST] unhandled error:", error);
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
+  }
 }

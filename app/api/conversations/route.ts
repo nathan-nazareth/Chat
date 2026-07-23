@@ -13,22 +13,30 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const auth = await requireUser();
-  if (auth.error) return auth.error;
+  try {
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
 
-  const rows = (await listConversations(auth.userId)).map((r) => ({
-    id: r.id,
-    peer: {
-      id: r.peer_id,
-      displayName: r.peer_display_name,
-      username: r.peer_username,
-    },
-    lastText: r.last_text,
-    lastMessageAt: r.last_message_at,
-    createdAt: r.created_at,
-    unread: r.unread,
-  }));
-  return NextResponse.json({ conversations: rows });
+    const rows = (await listConversations(auth.userId)).map((r) => ({
+      id: r.id,
+      peer: {
+        id: r.peer_id,
+        displayName: r.peer_display_name,
+        username: r.peer_username,
+      },
+      lastText: r.last_text,
+      lastMessageAt: r.last_message_at,
+      createdAt: r.created_at,
+      unread: r.unread,
+    }));
+    return NextResponse.json({ conversations: rows });
+  } catch (error) {
+    console.error("[ERROR] [conversations GET] unhandled error:", error);
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
+  }
 }
 
 const CreateBody = z.object({
@@ -40,42 +48,50 @@ const CreateBody = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const auth = await requireUser();
-  if (auth.error) return auth.error;
+  try {
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
 
-  const json = await req.json().catch(() => null);
-  const parsed = CreateBody.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
-  }
-  const peerId = parsed.data.userId;
-  if (peerId === auth.userId) {
-    return NextResponse.json({ error: "Cannot chat with yourself" }, { status: 400 });
-  }
-  const peer = await getUserById(peerId);
-  if (!peer || !peer.profile_completed_at) {
-    return NextResponse.json({ error: "User not found" }, { status: 404 });
-  }
+    const json = await req.json().catch(() => null);
+    const parsed = CreateBody.safeParse(json);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
+    }
+    const peerId = parsed.data.userId;
+    if (peerId === auth.userId) {
+      return NextResponse.json({ error: "Cannot chat with yourself" }, { status: 400 });
+    }
+    const peer = await getUserById(peerId);
+    if (!peer || !peer.profile_completed_at) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
 
-  const conv =
-    (await findConversationBetween(auth.userId, peerId)) ??
-    (await createConversation(auth.userId, peerId));
+    const conv =
+      (await findConversationBetween(auth.userId, peerId)) ??
+      (await createConversation(auth.userId, peerId));
 
-  const lastText = await getLastMessageText(conv.id);
-  const unread = await countUnreadInConversation(conv.id, auth.userId);
+    const lastText = await getLastMessageText(conv.id);
+    const unread = await countUnreadInConversation(conv.id, auth.userId);
 
-  return NextResponse.json({
-    conversation: {
-      id: conv.id,
-      peer: {
-        id: peer.id,
-        displayName: peer.display_name,
-        username: peer.username,
+    return NextResponse.json({
+      conversation: {
+        id: conv.id,
+        peer: {
+          id: peer.id,
+          displayName: peer.display_name,
+          username: peer.username,
+        },
+        lastText,
+        lastMessageAt: conv.last_message_at,
+        createdAt: conv.created_at,
+        unread,
       },
-      lastText,
-      lastMessageAt: conv.last_message_at,
-      createdAt: conv.created_at,
-      unread,
-    },
-  });
+    });
+  } catch (error) {
+    console.error("[ERROR] [conversations POST] unhandled error:", error);
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
+  }
 }

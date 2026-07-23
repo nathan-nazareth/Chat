@@ -24,6 +24,28 @@ export default function AuthPage() {
   const [devCode, setDevCode] = useState<string | null>(null);
   const actionInFlightRef = useRef(false);
 
+  // Bounce signed-in users to the home/profile route immediately so visiting
+  // /auth in an active session doesn't show the form (then either succeed
+  // signin again or overwrite the session via OTP verify).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/me", { cache: "no-store" });
+        if (cancelled || !res.ok) return;
+        const data = await res.json().catch(() => null);
+        if (data?.user) {
+          router.replace(data.user.profileCompleted ? "/" : "/profile");
+        }
+      } catch {
+        // ignore — fall through to render the form
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
   useEffect(() => {
     setError(null);
     setPasswordError(null);

@@ -13,26 +13,34 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const auth = await requireUser();
-  if (auth.error) return auth.error;
+  try {
+    const auth = await requireUser();
+    if (auth.error) return auth.error;
 
-  const conversationId = Number(params.id);
-  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
-    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    const conversationId = Number(params.id);
+    if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+    if (!(await isConversationMember(conversationId, auth.userId))) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    const messages = await listMessages(conversationId);
+    return NextResponse.json({
+      messages: messages.map((m) => ({
+        id: m.id,
+        senderId: m.sender_id,
+        text: m.text,
+        createdAt: m.created_at,
+        isRead: Boolean(m.is_read),
+      })),
+    });
+  } catch (error) {
+    console.error("[ERROR] [conversations/messages GET] unhandled error:", error);
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
   }
-  if (!(await isConversationMember(conversationId, auth.userId))) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-  const messages = await listMessages(conversationId);
-  return NextResponse.json({
-    messages: messages.map((m) => ({
-      id: m.id,
-      senderId: m.sender_id,
-      text: m.text,
-      createdAt: m.created_at,
-      isRead: Boolean(m.is_read),
-    })),
-  });
 }
 
 const SendBody = z.object({
