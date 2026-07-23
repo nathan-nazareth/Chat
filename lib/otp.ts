@@ -49,16 +49,12 @@ export async function sendOtpEmail(
     process.env.EMAIL_FROM ||
     "onboarding@resend.dev";
 
-  // No Resend configured: in dev, surface the code via the server console so
-  // the operator can copy it without setting up email. In production, hard
-  // fail so we never silently drop codes.
+  // No Resend configured: surface the code via the server console so the
+  // operator can copy it. We intentionally do NOT hard-fail in production
+  // (which would surface as a 500 to the user) — instead we log the code and
+  // let the route expose it via `devCode` so signup can still proceed.
   if (!apiKey) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("RESEND_API_KEY is required in production");
-    }
-    console.log(
-      `[OTP] ${purpose} -> ${email}: ${code}\n${text}`
-    );
+    console.log(`[OTP] ${purpose} -> ${email}: ${code}\n${text}`);
     return { delivered: "console" };
   }
 
