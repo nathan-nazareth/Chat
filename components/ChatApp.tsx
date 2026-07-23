@@ -29,6 +29,7 @@ export function ChatApp({
     initialConversations[0]?.id ?? null
   );
   const [showNew, setShowNew] = useState(false);
+  const [jumpSearch, setJumpSearch] = useState<string | null>(null);
   const activeIdRef = useRef(activeId);
   const conversationVersionRef = useRef(0);
 
@@ -129,10 +130,24 @@ export function ChatApp({
     };
   }, [router]);
 
+  function handleJumpToConversation(conversationId: number, query: string) {
+    conversationVersionRef.current += 1;
+    activeIdRef.current = conversationId;
+    setActiveId(conversationId);
+    setJumpSearch(query);
+    setConversations((prev) =>
+      prev.map((c) => (c.id === conversationId ? { ...c, unread: 0 } : c))
+    );
+    void fetch(`/api/conversations/${conversationId}/read`, { method: "POST" }).catch(
+      () => {}
+    );
+  }
+
   function handleSelect(id: number) {
     conversationVersionRef.current += 1;
     activeIdRef.current = id;
     setActiveId(id);
+    setJumpSearch(null); // Clear any stale jump search
     // Optimistically clear the unread badge; the server marks it read on open.
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, unread: 0 } : c))
@@ -239,6 +254,7 @@ export function ChatApp({
             conversations={conversations}
             activeId={activeId}
             onSelect={handleSelect}
+            onJumpToConversation={handleJumpToConversation}
           />
         </aside>
 
@@ -255,6 +271,7 @@ export function ChatApp({
               meId={me.id}
               onSent={handleSent}
               onBack={handleBack}
+              initialSearch={jumpSearch}
             />
           ) : (
             <EmptyState onNew={() => setShowNew(true)} meName={me.displayName} />

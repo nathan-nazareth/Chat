@@ -54,11 +54,13 @@ export function ConversationView({
   meId,
   onSent,
   onBack,
+  initialSearch,
 }: {
   conversation: Conversation;
   meId: number;
   onSent: (convId: number, msg: ChatMessage) => void;
   onBack: () => void;
+  initialSearch?: string | null;
 }) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -82,6 +84,16 @@ export function ConversationView({
 
   const peerName =
     conversation.peer.displayName ?? `@${conversation.peer.username ?? "user"}`;
+
+  /* ---- Activate initial search when jumping from global search ---- */
+  const initialSearchHandled = useRef(false);
+  useEffect(() => {
+    if (initialSearch && initialSearchHandled.current === false) {
+      initialSearchHandled.current = true;
+      setShowSearch(true);
+      setSearchQuery(initialSearch);
+    }
+  }, [initialSearch]);
 
   /* ---- Auto-resize textarea ---- */
   const resizeTextarea = useCallback(() => {

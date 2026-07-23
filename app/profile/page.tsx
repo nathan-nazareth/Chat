@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
-import { getUserById } from "@/lib/db";
+import { getUserByEmail, getUserById } from "@/lib/db";
 import ProfileForm from "@/components/ProfileForm";
+import PasswordSetupForm from "@/components/PasswordSetupForm";
 
 export default async function ProfilePage() {
   const session = await getSession();
@@ -10,7 +11,12 @@ export default async function ProfilePage() {
   const user = await getUserById(session.userId);
   if (!user) redirect("/auth");
   if (user.profile_completed_at) redirect("/");
-  if (!user.password_hash) redirect("/auth");
+
+  // The user is mid-signup: they've verified their email but haven't set a
+  // password yet. Render the password-setup step so they don't get sent back
+  // to /auth (which would create a redirect loop with the auth page's
+  // signed-in-user bounce).
+  const needsPassword = !user.password_hash;
 
   return (
     <main className="min-h-full flex items-center justify-center px-4 py-12">
@@ -23,16 +29,22 @@ export default async function ProfilePage() {
             </svg>
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
-            Set up your profile
+            {needsPassword ? "Set up your password" : "Set up your profile"}
           </h1>
           <p className="text-sm text-zinc-400 mt-2">
-            Choose how you&apos;ll appear in chat
+            {needsPassword
+              ? "Create a password so you can sign back in later"
+              : "Choose how you'll appear in chat"}
           </p>
         </div>
 
         {/* Card */}
         <div className="rounded-2xl border border-zinc-800/60 bg-surface-raised backdrop-blur-xl p-6 shadow-elevated">
-          <ProfileForm />
+          {needsPassword ? (
+            <PasswordSetupForm email={user.email} />
+          ) : (
+            <ProfileForm />
+          )}
         </div>
       </div>
     </main>
