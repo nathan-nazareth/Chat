@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     }
 
     const url = new URL(req.url);
-    const q = url.searchParams.get("q")?.trim() || "";
+    const q = (url.searchParams.get("q") ?? "").slice(0, 200).trim();
 
     if (!q) {
       return NextResponse.json({ messages: [] });

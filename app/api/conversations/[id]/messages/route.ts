@@ -27,7 +27,7 @@ export async function GET(
     }
 
     const url = new URL(req.url);
-    const q = url.searchParams.get("q")?.trim() || "";
+    const q = (url.searchParams.get("q") ?? "").slice(0, 200).trim();
 
     let messages;
     if (q) {

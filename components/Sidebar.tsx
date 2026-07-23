@@ -1,16 +1,32 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation } from "@/lib/types";
+
+type SearchResult = {
+  id: number;
+  conversationId: number;
+  senderId: number;
+  text: string;
+  createdAt: number;
+  isRead: boolean;
+  peer: {
+    id: number;
+    displayName: string | null;
+    username: string | null;
+  };
+};
 
 export function Sidebar({
   conversations,
   activeId,
   onSelect,
+  onJumpToConversation,
 }: {
   conversations: Conversation[];
   activeId: number | null;
   onSelect: (id: number) => void;
+  onJumpToConversation?: (conversationId: number, query: string) => void;
 }) {
   const [filter, setFilter] = useState("");
 
@@ -40,9 +56,139 @@ export function Sidebar({
     );
   }
 
+  /* ---- Global search ---- */
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [globalResults, setGlobalResults] = useState<SearchResult[]>([]);
+  const [globalSearching, setGlobalSearching] = useState(false);
+  const [showGlobalResults, setShowGlobalResults] = useState(false);
+  const globalSearchRef = useRef<HTMLDivElement>(null);
+  const globalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (globalTimerRef.current) clearTimeout(globalTimerRef.current);
+    const q = globalQuery.trim();
+    if (!q || q.length < 2) {
+      setGlobalResults([]);
+      setShowGlobalResults(false);
+      return;
+    }
+    globalTimerRef.current = setTimeout(async () => {
+      setGlobalSearching(true);
+      try {
+        const res = await fetch(`/api/messages/search?q=${encodeURIComponent(q)}`, {
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setGlobalResults(data.messages ?? []);
+          setShowGlobalResults(true);
+        }
+      } catch {
+        // Silently fail
+      } finally {
+        setGlobalSearching(false);
+      }
+    }, 200);
+    return () => {
+      if (globalTimerRef.current) clearTimeout(globalTimerRef.current);
+    };
+  }, [globalQuery]);
+
+  // Close global results on click outside
+  useEffect(() => {
+    if (!showGlobalResults) return;
+    function handleClick(e: MouseEvent) {
+      if (globalSearchRef.current && !globalSearchRef.current.contains(e.target as Node)) {
+        setShowGlobalResults(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showGlobalResults]);
+
+  const handleGlobalResultClick = useCallback(
+    (result: SearchResult) => {
+      setGlobalQuery("");
+      setGlobalResults([]);
+      setShowGlobalResults(false);
+      onJumpToConversation?.(result.conversationId, result.text.slice(0, 40));
+    },
+    [onJumpToConversation]
+  );
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Search */}
+      {/* Global Search */}
+      <div className="px-3 pb-2" ref={globalSearchRef}>
+        <div className="relative">
+          <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          <input
+            value={globalQuery}
+            onChange={(e) => setGlobalQuery(e.target.value)}
+            placeholder="Search all messages..."
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            type="search"
+            style={{ fontSize: "16px" }}
+            className="w-full bg-zinc-900/60 border border-zinc-800/60 rounded-lg pl-8 pr-3 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-accent/30 transition-colors"
+          />
+          {globalSearching && (
+            <div className="absolute right-2 top-1/2 -translate-y-1/2">
+              <div className="w-3.5 h-3.5 border-2 border-zinc-600/30 border-t-zinc-400 rounded-full animate-spin" />
+            </div>
+          )}
+        </div>
+
+        {/* Global results dropdown */}
+        {showGlobalResults && (
+          <div className="absolute left-3 right-3 mt-1 z-50 rounded-xl border border-zinc-700/60 bg-surface-raised backdrop-blur-xl shadow-elevated overflow-hidden animate-fade-in">
+            {globalResults.length === 0 ? (
+              <div className="px-4 py-3 text-center">
+                <p className="text-xs text-zinc-500">No messages match &quot;{globalQuery}&quot;</p>
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto py-1">
+                <p className="px-4 py-1.5 text-[10px] font-medium text-zinc-500 uppercase tracking-wider">
+                  {globalResults.length} result{globalResults.length !== 1 ? "s" : ""}
+                </p>
+                {globalResults.map((r) => {
+                  const peerName = r.peer.displayName ?? `@${r.peer.username ?? "user"}`;
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={() => handleGlobalResultClick(r)}
+                      className="w-full flex items-start gap-3 px-4 py-2.5 text-left hover:bg-zinc-800/40 transition-colors"
+                    >
+                      <div className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-accent to-purple-500 grid place-items-center text-white text-[10px] font-semibold mt-0.5">
+                        {peerName.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-medium text-zinc-200 truncate">
+                            {peerName}
+                          </p>
+                          <span className="text-[10px] text-zinc-500 shrink-0 tabular-nums">
+                            {formatTime(r.createdAt)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400 mt-0.5 line-clamp-2 leading-relaxed">
+                          {r.text}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Conversation Filter */}
       {conversations.length > 3 && (
         <div className="px-3 pb-2">
           <div className="relative">
@@ -52,7 +198,7 @@ export function Sidebar({
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Search conversations..."
+              placeholder="Filter conversations..."
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -64,7 +210,7 @@ export function Sidebar({
             {filter && (
               <button
                 onClick={() => setFilter("")}
-                aria-label="Clear search"
+                aria-label="Clear filter"
                 className="absolute right-1 top-1/2 -translate-y-1/2 min-w-[36px] min-h-[36px] grid place-items-center text-zinc-500 hover:text-zinc-300 transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

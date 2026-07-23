@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const q = req.nextUrl.searchParams.get("q") ?? "";
+    const q = (req.nextUrl.searchParams.get("q") ?? "").slice(0, 100);
     const trimmed = q.trim();
     if (trimmed.length < 2) {
       return NextResponse.json({ users: [] });
