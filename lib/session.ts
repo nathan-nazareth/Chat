@@ -7,11 +7,20 @@ export type SessionData = {
   displayName?: string;
   username?: string;
   email?: string;
+  profileCompleted?: boolean;
 };
+
+const sessionPassword = process.env.SESSION_PASSWORD;
+if (
+  process.env.NODE_ENV === "production" &&
+  (!sessionPassword || sessionPassword.length < 32)
+) {
+  throw new Error("SESSION_PASSWORD must be at least 32 characters in production");
+}
 
 export const sessionOptions: SessionOptions = {
   password:
-    process.env.SESSION_PASSWORD ||
+    sessionPassword ||
     "dev-only-fallback-please-set-SESSION_PASSWORD-in-env-at-least-32-chars",
   cookieName: "chat_session",
   cookieOptions: {

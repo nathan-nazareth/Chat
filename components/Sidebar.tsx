@@ -5,12 +5,10 @@ import type { Conversation } from "@/lib/types";
 export function Sidebar({
   conversations,
   activeId,
-  meId,
   onSelect,
 }: {
   conversations: Conversation[];
   activeId: number | null;
-  meId: number;
   onSelect: (id: number) => void;
 }) {
   if (conversations.length === 0) {
@@ -39,16 +37,37 @@ export function Sidebar({
             <Avatar name={initials} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <p className="truncate font-medium text-sm">{name}</p>
+                <p
+                  className={`truncate text-sm ${
+                    c.unread > 0 ? "font-semibold text-white" : "font-medium text-zinc-200"
+                  }`}
+                >
+                  {name}
+                </p>
                 {c.lastMessageAt && (
-                  <span className="text-[10px] text-zinc-500 shrink-0">
+                  <span
+                    className={`text-[10px] shrink-0 ${
+                      c.unread > 0 ? "text-emerald-400" : "text-zinc-500"
+                    }`}
+                  >
                     {formatTime(c.lastMessageAt)}
                   </span>
                 )}
               </div>
-              <p className="truncate text-xs text-zinc-500 mt-0.5">
-                {previewText(c.lastText, meId)}
-              </p>
+              <div className="flex items-center justify-between gap-2 mt-0.5">
+                <p
+                  className={`truncate text-xs ${
+                    c.unread > 0 ? "text-zinc-300" : "text-zinc-500"
+                  }`}
+                >
+                  {previewText(c.lastText)}
+                </p>
+                {c.unread > 0 && (
+                  <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white text-[10px] font-semibold grid place-items-center">
+                    {c.unread > 99 ? "99+" : c.unread}
+                  </span>
+                )}
+              </div>
             </div>
           </button>
         );
@@ -57,7 +76,7 @@ export function Sidebar({
   );
 }
 
-function previewText(text: string | null, _meId: number) {
+function previewText(text: string | null) {
   if (!text) return "Say hi 👋";
   return text;
 }

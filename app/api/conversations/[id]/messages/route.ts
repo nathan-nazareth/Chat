@@ -4,8 +4,8 @@ import { requireUser } from "@/lib/auth";
 import {
   createMessage,
   isConversationMember,
+  listAndMarkRead,
   listMessages,
-  markConversationRead,
 } from "@/lib/db";
 
 export async function GET(
@@ -16,21 +16,48 @@ export async function GET(
   if (auth.error) return auth.error;
 
   const conversationId = Number(params.id);
-  if (!Number.isInteger(conversationId)) {
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
   if (!(await isConversationMember(conversationId, auth.userId))) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  const messages = (await listMessages(conversationId)).map((m) => ({
-    id: m.id,
-    senderId: m.sender_id,
-    text: m.text,
-    createdAt: m.created_at,
-    isRead: Boolean(m.is_read),
-  }));
-  await markConversationRead(conversationId, auth.userId);
-  return NextResponse.json({ messages });
+  const messages = await listMessages(conversationId);
+  return NextResponse.json({
+    messages: messages.map((m) => ({
+      id: m.id,
+      senderId: m.sender_id,
+      text: m.text,
+      createdAt: m.created_at,
+      isRead: Boolean(m.is_read),
+    })),
+  });
+}
+
+export async function PATCH(
+  _req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const auth = await requireUser();
+  if (auth.error) return auth.error;
+
+  const conversationId = Number(params.id);
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+  if (!(await isConversationMember(conversationId, auth.userId))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const { messages } = await listAndMarkRead(conversationId, auth.userId);
+  return NextResponse.json({
+    messages: messages.map((m) => ({
+      id: m.id,
+      senderId: m.sender_id,
+      text: m.text,
+      createdAt: m.created_at,
+      isRead: Boolean(m.is_read),
+    })),
+  });
 }
 
 const SendBody = z.object({
@@ -45,7 +72,7 @@ export async function POST(
   if (auth.error) return auth.error;
 
   const conversationId = Number(params.id);
-  if (!Number.isInteger(conversationId)) {
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
   if (!(await isConversationMember(conversationId, auth.userId))) {
@@ -62,6 +89,9 @@ export async function POST(
   }
 
   const m = await createMessage(conversationId, auth.userId, parsed.data.text);
+  if (!m) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
   return NextResponse.json({
     message: {
       id: m.id,

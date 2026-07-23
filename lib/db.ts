@@ -43,6 +43,11 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_otps_email_purpose ON otps(email, purpose)`,
+  // At most one unconsumed, unexpired OTP per (email, purpose) at a time.
+  // Without this, two concurrent createOtp calls can each see "no active row"
+  // inside their transactions and both insert, leaving multiple valid codes.
+  `CREATE UNIQUE INDEX IF NOT EXISTS uniq_otps_active
+     ON otps(email, purpose) WHERE consumed_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS conversations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_a_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -52,6 +57,7 @@ const SCHEMA = [
     UNIQUE (user_a_id, user_b_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_conv_last_msg ON conversations(last_message_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_conv_pair ON conversations(user_a_id, user_b_id)`,
   `CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -100,7 +106,8 @@ export async function getUserByEmail(email: string): Promise<User | undefined> {
     sql: "SELECT * FROM users WHERE email = ?",
     args: [email.toLowerCase()],
   });
-  return (rs.rows[0] as unknown as User | undefined) ?? undefined;
+  const row = rs.rows[0] as unknown as User | undefined;
+  return row ? { ...row, id: n(row.id) } : undefined;
 }
 
 export async function getUserById(id: number): Promise<User | undefined> {
@@ -141,6 +148,7 @@ export async function setPasswordHash(
   userId: number,
   hash: string
 ): Promise<void> {
+  await ensureSchema();
   await getClient().execute({
     sql: "UPDATE users SET password_hash = ? WHERE id = ?",
     args: [hash, userId],
@@ -148,6 +156,7 @@ export async function setPasswordHash(
 }
 
 export async function markEmailVerified(userId: number): Promise<void> {
+  await ensureSchema();
   await getClient().execute({
     sql: "UPDATE users SET email_verified_at = ? WHERE id = ?",
     args: [Date.now(), userId],
@@ -158,11 +167,20 @@ export async function setProfile(
   userId: number,
   displayName: string,
   username: string
-): Promise<void> {
-  await getClient().execute({
-    sql: "UPDATE users SET display_name = ?, username = ?, profile_completed_at = ? WHERE id = ?",
+): Promise<boolean> {
+  await ensureSchema();
+  // Require a password before letting the profile be finalized. The
+  // passwordless signup flow leaves password_hash NULL until the user
+  // completes /api/auth/signup-password; without this guard, a user could
+  // skip the password step (e.g., by closing the browser) and reach a
+  // "profile_complete && no password" state from which they could never
+  // sign in again (password signin needs a hash; signin OTP is blocked for
+  // passwordless accounts; signup OTP is blocked once the profile is done).
+  const result = await getClient().execute({
+    sql: "UPDATE users SET display_name = ?, username = ?, profile_completed_at = ? WHERE id = ? AND profile_completed_at IS NULL AND password_hash IS NOT NULL",
     args: [displayName, username.toLowerCase(), Date.now(), userId],
   });
+  return result.rowsAffected === 1;
 }
 
 export async function createOtp(
@@ -170,36 +188,185 @@ export async function createOtp(
   purpose: "signup" | "signin",
   codeHash: string,
   ttlMs: number
-): Promise<void> {
+): Promise<number> {
+  await ensureSchema();
   const now = Date.now();
-  await getClient().execute({
-    sql: "INSERT INTO otps (email, purpose, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-    args: [email.toLowerCase(), purpose, codeHash, now + ttlMs, now],
-  });
+  const normalizedEmail = email.toLowerCase();
+  const tx = await getClient().transaction("write");
+  try {
+    // Invalidate any still-active OTPs for this email+purpose so the freshly
+    // generated code is the only one that will be accepted. Without this,
+    // prior codes remain "active" in the DB and a user re-submitting an old
+    // code (e.g., after a resend) would receive a confusing "Invalid code"
+    // error — verification only inspects the most recent OTP row.
+    await tx.execute({
+      sql: "UPDATE otps SET consumed_at = ? WHERE email = ? AND purpose = ? AND consumed_at IS NULL",
+      args: [now, normalizedEmail, purpose],
+    });
+    const info = await tx.execute({
+      sql: "INSERT INTO otps (email, purpose, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+      args: [normalizedEmail, purpose, codeHash, now + ttlMs, now],
+    });
+    await tx.commit();
+    const id = n(info.lastInsertRowid);
+    if (!Number.isSafeInteger(id)) throw new Error("Failed to create OTP");
+    return id;
+  } finally {
+    tx.close();
+  }
 }
 
-export async function findActiveOtp(
+export async function findActiveOtpByHash(
   email: string,
-  purpose: "signup" | "signin"
-): Promise<{ id: number; code_hash: string } | undefined> {
+  purpose: "signup" | "signin",
+  codeHash: string
+): Promise<{ id: number } | undefined> {
   await ensureSchema();
   const rs = await getClient().execute({
-    sql: `SELECT * FROM otps
-          WHERE email = ? AND purpose = ? AND consumed_at IS NULL AND expires_at > ?
-          ORDER BY id DESC LIMIT 1`,
-    args: [email.toLowerCase(), purpose, Date.now()],
+    sql: `SELECT id FROM otps
+          WHERE email = ? AND purpose = ? AND code_hash = ?
+            AND consumed_at IS NULL AND expires_at > ?
+          LIMIT 1`,
+    args: [email.toLowerCase(), purpose, codeHash, Date.now()],
   });
-  const row = rs.rows[0] as unknown as
-    | { id: number; code_hash: string }
-    | undefined;
-  return row ? { id: n(row.id), code_hash: row.code_hash } : undefined;
+  const row = rs.rows[0] as unknown as { id: number } | undefined;
+  return row ? { id: n(row.id) } : undefined;
 }
 
-export async function consumeOtp(id: number): Promise<void> {
+export async function discardOtp(id: number): Promise<void> {
+  await ensureSchema();
   await getClient().execute({
-    sql: "UPDATE otps SET consumed_at = ? WHERE id = ?",
-    args: [Date.now(), id],
+    sql: "DELETE FROM otps WHERE id = ? AND consumed_at IS NULL",
+    args: [id],
   });
+}
+
+export async function consumeActiveOtp(
+  email: string,
+  purpose: "signup" | "signin",
+  codeHash: string
+): Promise<boolean> {
+  await ensureSchema();
+  const now = Date.now();
+  const rs = await getClient().execute({
+    sql: `UPDATE otps SET consumed_at = ?
+          WHERE email = ? AND purpose = ? AND code_hash = ?
+            AND consumed_at IS NULL AND expires_at > ?`,
+    args: [now, email.toLowerCase(), purpose, codeHash, now],
+  });
+  return rs.rowsAffected === 1;
+}
+
+export async function consumeOtpById(id: number): Promise<boolean> {
+  await ensureSchema();
+  const now = Date.now();
+  const rs = await getClient().execute({
+    sql: `UPDATE otps SET consumed_at = ?
+          WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`,
+    args: [now, id, now],
+  });
+  return rs.rowsAffected === 1;
+}
+
+export async function setPasswordHashByEmail(
+  email: string,
+  passwordHash: string
+): Promise<User | undefined> {
+  await ensureSchema();
+  const normalizedEmail = email.toLowerCase();
+  const now = Date.now();
+  const tx = await getClient().transaction("write");
+  try {
+    const rs = await tx.execute({
+      sql: `UPDATE users SET password_hash = ?, email_verified_at = COALESCE(email_verified_at, ?)
+            WHERE email = ? AND password_hash IS NULL AND profile_completed_at IS NULL
+            RETURNING *`,
+      args: [passwordHash, now, normalizedEmail],
+    });
+    const row = rs.rows[0] as unknown as User | undefined;
+    await tx.commit();
+    if (!row) return undefined;
+    return { ...row, id: n(row.id) };
+  } finally {
+    tx.close();
+  }
+}
+
+export type SignupCompletion =
+  | { status: "ok"; user: User }
+  | { status: "invalid_otp" }
+  | { status: "account_exists" };
+
+export async function completeSignup(
+  email: string,
+  codeHash: string,
+  passwordHash: string | null
+): Promise<SignupCompletion> {
+  await ensureSchema();
+  const normalizedEmail = email.toLowerCase();
+  const now = Date.now();
+  const tx = await getClient().transaction("write");
+  try {
+    const claimed = await tx.execute({
+      sql: `UPDATE otps SET consumed_at = ?
+            WHERE email = ? AND purpose = 'signup' AND code_hash = ?
+              AND consumed_at IS NULL AND expires_at > ?`,
+      args: [now, normalizedEmail, codeHash, now],
+    });
+    if (claimed.rowsAffected !== 1) return { status: "invalid_otp" };
+
+    if (passwordHash === null) {
+      // Mark the email verified on insert. The OTP was already claimed at the
+      // top of this transaction, so we know the address belongs to the caller.
+      // Without this, passwordless signups leave email_verified_at NULL until
+      // the user later sets a password (which COALESCE-sets it), making the
+      // column's semantics "verified-AND-has-password" instead of "verified".
+      const rs = await tx.execute({
+        sql: `INSERT INTO users (email, email_verified_at, created_at)
+              VALUES (?, ?, ?)
+              ON CONFLICT(email) DO NOTHING
+              RETURNING *`,
+        args: [normalizedEmail, now, now],
+      });
+      let row = rs.rows[0] as unknown as User | undefined;
+      if (!row) {
+        const existing = await tx.execute({
+          sql: "SELECT * FROM users WHERE email = ?",
+          args: [normalizedEmail],
+        });
+        row = existing.rows[0] as unknown as User | undefined;
+      }
+      await tx.commit();
+      if (!row || row.password_hash || row.profile_completed_at) {
+        return { status: "account_exists" };
+      }
+      return { status: "ok", user: { ...row, id: n(row.id) } };
+    }
+
+    const rs = await tx.execute({
+      sql: `INSERT INTO users (email, password_hash, email_verified_at, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(email) DO NOTHING
+            RETURNING *`,
+      args: [normalizedEmail, passwordHash, now, now],
+    });
+    let row = rs.rows[0] as unknown as User | undefined;
+    if (!row) {
+      const updated = await tx.execute({
+        sql: `UPDATE users
+              SET password_hash = ?, email_verified_at = COALESCE(email_verified_at, ?)
+              WHERE email = ? AND password_hash IS NULL AND profile_completed_at IS NULL
+              RETURNING *`,
+        args: [passwordHash, now, normalizedEmail],
+      });
+      row = updated.rows[0] as unknown as User | undefined;
+    }
+    await tx.commit();
+    if (!row) return { status: "account_exists" };
+    return { status: "ok", user: { ...row, id: n(row.id) } };
+  } finally {
+    tx.close();
+  }
 }
 
 // ---------- Search / conversations / messages ----------
@@ -233,9 +400,13 @@ export async function searchUsers(
   limit = 10
 ): Promise<PublicUser[]> {
   await ensureSchema();
-  const q = query.trim().toLowerCase();
+  const q = query.trim().toLowerCase().replace(/^@/, "");
   if (!q) return [];
-  const like = `%${q.replace(/[%_]/g, (m) => "\\" + m)}%`;
+  // Escape `\`, `%`, and `_` so the LIKE pattern matches the user's literal
+  // input. Without escaping `\`, a literal backslash in the query would be
+  // interpreted as the SQL escape character and match arbitrary chars (so a
+  // search for "foo\bar" would match "foobar", "fooXbar", etc.).
+  const like = `%${q.replace(/[\\%_]/g, (m) => "\\" + m)}%`;
   const rs = await getClient().execute({
     sql: `SELECT id, display_name, username FROM users
           WHERE id != ? AND profile_completed_at IS NOT NULL
@@ -254,10 +425,13 @@ export async function findConversationBetween(
   a: number,
   b: number
 ): Promise<ConversationRow | undefined> {
+  await ensureSchema();
+  if (a === b) return undefined;
+  const [userA, userB] = a < b ? [a, b] : [b, a];
   const rs = await getClient().execute({
     sql: `SELECT * FROM conversations
-          WHERE (user_a_id = ? AND user_b_id = ?) OR (user_a_id = ? AND user_b_id = ?)`,
-    args: [a, b, b, a],
+          WHERE user_a_id = ? AND user_b_id = ?`,
+    args: [userA, userB],
   });
   const row = rs.rows[0] as unknown as ConversationRow | undefined;
   return row
@@ -274,15 +448,35 @@ export async function createConversation(
   a: number,
   b: number
 ): Promise<ConversationRow> {
+  await ensureSchema();
+  if (a === b) throw new Error("Cannot create conversation with self");
   const [userA, userB] = a < b ? [a, b] : [b, a];
   const now = Date.now();
-  await getClient().execute({
-    sql: "INSERT OR IGNORE INTO conversations (user_a_id, user_b_id, created_at) VALUES (?, ?, ?)",
-    args: [userA, userB, now],
-  });
-  const conv = await findConversationBetween(a, b);
-  if (!conv) throw new Error("Failed to create conversation");
-  return conv;
+  // Run the INSERT and the lookup inside a single write transaction so the
+  // follow-up SELECT is guaranteed to observe the just-inserted row, even on
+  // a read replica with read-your-writes disabled (libsql HTTP client).
+  const tx = await getClient().transaction("write");
+  try {
+    await tx.execute({
+      sql: "INSERT OR IGNORE INTO conversations (user_a_id, user_b_id, created_at) VALUES (?, ?, ?)",
+      args: [userA, userB, now],
+    });
+    const rs = await tx.execute({
+      sql: "SELECT * FROM conversations WHERE user_a_id = ? AND user_b_id = ?",
+      args: [userA, userB],
+    });
+    await tx.commit();
+    const row = rs.rows[0] as unknown as ConversationRow | undefined;
+    if (!row) throw new Error("Failed to create conversation");
+    return {
+      ...row,
+      id: n(row.id),
+      user_a_id: n(row.user_a_id),
+      user_b_id: n(row.user_b_id),
+    };
+  } finally {
+    tx.close();
+  }
 }
 
 export type ConversationWithPeer = ConversationRow & {
@@ -290,6 +484,7 @@ export type ConversationWithPeer = ConversationRow & {
   peer_display_name: string | null;
   peer_username: string | null;
   last_text: string | null;
+  unread: number;
 };
 
 export async function listConversations(
@@ -302,12 +497,13 @@ export async function listConversations(
             CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END AS peer_id,
             u.display_name AS peer_display_name,
             u.username      AS peer_username,
-            (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_text
+            (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_text,
+            (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.sender_id != ? AND m.is_read = 0) AS unread
           FROM conversations c
           JOIN users u ON u.id = CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END
           WHERE c.user_a_id = ? OR c.user_b_id = ?
-          ORDER BY COALESCE(c.last_message_at, c.created_at) DESC`,
-    args: [userId, userId, userId, userId],
+          ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC`,
+    args: [userId, userId, userId, userId, userId],
   });
   return rs.rows.map((r) => {
     const row = r as unknown as ConversationWithPeer;
@@ -317,6 +513,7 @@ export async function listConversations(
       user_a_id: n(row.user_a_id),
       user_b_id: n(row.user_b_id),
       peer_id: n(row.peer_id),
+      unread: n(row.unread),
     };
   });
 }
@@ -324,6 +521,7 @@ export async function listConversations(
 export async function getConversationById(
   id: number
 ): Promise<ConversationRow | undefined> {
+  await ensureSchema();
   const rs = await getClient().execute({
     sql: "SELECT * FROM conversations WHERE id = ?",
     args: [id],
@@ -332,10 +530,36 @@ export async function getConversationById(
   return row ? { ...row, id: n(row.id) } : undefined;
 }
 
+export async function getLastMessageText(
+  conversationId: number
+): Promise<string | null> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: "SELECT text FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+    args: [conversationId],
+  });
+  const row = rs.rows[0] as unknown as { text: string } | undefined;
+  return row ? row.text : null;
+}
+
+export async function countUnreadInConversation(
+  conversationId: number,
+  userId: number
+): Promise<number> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND sender_id != ? AND is_read = 0",
+    args: [conversationId, userId],
+  });
+  const row = rs.rows[0] as unknown as { c: number };
+  return n(row.c);
+}
+
 export async function isConversationMember(
   conversationId: number,
   userId: number
 ): Promise<boolean> {
+  await ensureSchema();
   const rs = await getClient().execute({
     sql: "SELECT user_a_id, user_b_id FROM conversations WHERE id = ?",
     args: [conversationId],
@@ -353,7 +577,13 @@ export async function listMessages(
 ): Promise<MessageRow[]> {
   await ensureSchema();
   const rs = await getClient().execute({
-    sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?`,
+    sql: `SELECT * FROM (
+            SELECT * FROM messages
+            WHERE conversation_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+          )
+          ORDER BY created_at ASC, id ASC`,
     args: [conversationId, limit],
   });
   return rs.rows.map((r) => {
@@ -368,61 +598,102 @@ export async function listMessages(
   });
 }
 
+export async function listAndMarkRead(
+  conversationId: number,
+  userId: number,
+  limit = 200
+): Promise<{ messages: MessageRow[]; marked: number }> {
+  await ensureSchema();
+  const tx = await getClient().transaction("write");
+  try {
+    // Mark unread messages read first so the returned `is_read` flags are
+    // already accurate on the very first poll — no 4 s flicker on the
+    // badge. The list is then guaranteed to reflect the post-read state.
+    const marked = await tx.execute({
+      sql: `UPDATE messages SET is_read = 1
+            WHERE conversation_id = ? AND sender_id != ? AND is_read = 0`,
+      args: [conversationId, userId],
+    });
+    const rs = await tx.execute({
+      sql: `SELECT * FROM (
+              SELECT * FROM messages
+              WHERE conversation_id = ?
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?
+            )
+            ORDER BY created_at ASC, id ASC`,
+      args: [conversationId, limit],
+    });
+    await tx.commit();
+    return {
+      marked: n(marked.rowsAffected),
+      messages: rs.rows.map((r) => {
+        const row = r as unknown as MessageRow;
+        return {
+          ...row,
+          id: n(row.id),
+          conversation_id: n(row.conversation_id),
+          sender_id: n(row.sender_id),
+          is_read: n(row.is_read),
+        };
+      }),
+    };
+  } finally {
+    tx.close();
+  }
+}
+
 export async function createMessage(
   conversationId: number,
   senderId: number,
   text: string
-): Promise<MessageRow> {
+): Promise<MessageRow | undefined> {
+  await ensureSchema();
   const now = Date.now();
-  const info = await getClient().execute({
-    sql: "INSERT INTO messages (conversation_id, sender_id, text, created_at, is_read) VALUES (?, ?, ?, ?, 0)",
-    args: [conversationId, senderId, text, now],
-  });
-  await getClient().execute({
-    sql: "UPDATE conversations SET last_message_at = ? WHERE id = ?",
-    args: [now, conversationId],
-  });
-  const rs = await getClient().execute({
-    sql: "SELECT * FROM messages WHERE id = ?",
-    args: [n(info.lastInsertRowid)],
-  });
-  const row = rs.rows[0] as unknown as MessageRow;
-  return {
-    ...row,
-    id: n(row.id),
-    conversation_id: n(row.conversation_id),
-    sender_id: n(row.sender_id),
-    is_read: n(row.is_read),
-  };
+  const tx = await getClient().transaction("write");
+  try {
+    const inserted = await tx.execute({
+      sql: `INSERT INTO messages (conversation_id, sender_id, text, created_at, is_read)
+            SELECT ?, ?, ?, ?, 0
+            FROM conversations
+            WHERE id = ? AND (user_a_id = ? OR user_b_id = ?)
+            RETURNING *`,
+      args: [
+        conversationId,
+        senderId,
+        text,
+        now,
+        conversationId,
+        senderId,
+        senderId,
+      ],
+    });
+    const row = inserted.rows[0] as unknown as MessageRow | undefined;
+    if (!row) return undefined;
+    await tx.execute({
+      sql: "UPDATE conversations SET last_message_at = MAX(COALESCE(last_message_at, 0), ?) WHERE id = ?",
+      args: [now, conversationId],
+    });
+    await tx.commit();
+    return {
+      ...row,
+      id: n(row.id),
+      conversation_id: n(row.conversation_id),
+      sender_id: n(row.sender_id),
+      is_read: n(row.is_read),
+    };
+  } finally {
+    tx.close();
+  }
 }
 
 export async function markConversationRead(
   conversationId: number,
   userId: number
 ): Promise<void> {
+  await ensureSchema();
   await getClient().execute({
     sql: "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ? AND is_read = 0",
     args: [conversationId, userId],
-  });
-}
-
-export async function countUnreadForUser(
-  userId: number
-): Promise<Array<{ conversation_id: number; unread: number }>> {
-  const rs = await getClient().execute({
-    sql: `SELECT m.conversation_id, COUNT(*) AS unread
-          FROM messages m
-          JOIN conversations c ON c.id = m.conversation_id
-          WHERE (c.user_a_id = ? OR c.user_b_id = ?)
-            AND m.sender_id != ? AND m.is_read = 0
-          GROUP BY m.conversation_id`,
-    args: [userId, userId, userId],
-  });
-  return rs.rows.map((r) => {
-    const row = r as unknown as { conversation_id: number; unread: number };
-    return {
-      conversation_id: n(row.conversation_id),
-      unread: n(row.unread),
-    };
   });
 }

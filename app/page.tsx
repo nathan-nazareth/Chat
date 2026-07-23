@@ -9,13 +9,12 @@ export default async function Home() {
   const session = await getSession();
   if (!session.userId) redirect("/auth");
 
-  const displayName = session.displayName;
-  const username = session.username;
-
-  if (!displayName || !username) redirect("/profile");
-
   const me = await getUserById(session.userId);
   if (!me) redirect("/auth");
+
+  const displayName = me.display_name;
+  const username = me.username;
+  if (!me.profile_completed_at || !displayName || !username) redirect("/profile");
 
   const rows = (await listConversations(me.id)).map((r) => ({
     id: r.id,
@@ -27,6 +26,7 @@ export default async function Home() {
     lastText: r.last_text,
     lastMessageAt: r.last_message_at,
     createdAt: r.created_at,
+    unread: r.unread,
   }));
 
   return (

@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import {
+  countUnreadInConversation,
   createConversation,
   findConversationBetween,
+  getLastMessageText,
   listConversations,
   getUserById,
 } from "@/lib/db";
@@ -22,12 +24,17 @@ export async function GET() {
     lastText: r.last_text,
     lastMessageAt: r.last_message_at,
     createdAt: r.created_at,
+    unread: r.unread,
   }));
   return NextResponse.json({ conversations: rows });
 }
 
 const CreateBody = z.object({
-  userId: z.number().int().positive(),
+  userId: z
+    .number()
+    .int()
+    .positive()
+    .refine(Number.isSafeInteger, "Invalid user id"),
 });
 
 export async function POST(req: NextRequest) {
@@ -52,6 +59,9 @@ export async function POST(req: NextRequest) {
     (await findConversationBetween(auth.userId, peerId)) ??
     (await createConversation(auth.userId, peerId));
 
+  const lastText = await getLastMessageText(conv.id);
+  const unread = await countUnreadInConversation(conv.id, auth.userId);
+
   return NextResponse.json({
     conversation: {
       id: conv.id,
@@ -60,9 +70,10 @@ export async function POST(req: NextRequest) {
         displayName: peer.display_name,
         username: peer.username,
       },
-      lastText: null,
+      lastText,
       lastMessageAt: conv.last_message_at,
       createdAt: conv.created_at,
+      unread,
     },
   });
 }

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, Conversation, PublicUser } from "@/lib/types";
 import { Sidebar } from "@/components/Sidebar";
 import { ConversationView } from "@/components/ConversationView";
@@ -20,14 +21,81 @@ export function ChatApp({
   me: Me;
   initialConversations: Conversation[];
 }) {
+  const router = useRouter();
   const [conversations, setConversations] =
     useState<Conversation[]>(initialConversations);
   const [activeId, setActiveId] = useState<number | null>(
     initialConversations[0]?.id ?? null
   );
   const [showNew, setShowNew] = useState(false);
+  const activeIdRef = useRef(activeId);
+  const conversationVersionRef = useRef(0);
 
   const active = conversations.find((c) => c.id === activeId) ?? null;
+
+  // Live cross-device updates: refresh the conversation list (previews, order,
+  // unread badges) periodically so messages sent from other devices appear.
+  useEffect(() => {
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
+    async function refresh() {
+      const version = conversationVersionRef.current;
+      try {
+        const res = await fetch("/api/conversations", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (res.status === 401 || res.status === 403) {
+          cancelled = true;
+          router.replace(res.status === 403 ? "/profile" : "/auth");
+          router.refresh();
+          return;
+        }
+        if (!res.ok) return;
+        const data = await res.json();
+        if (
+          cancelled ||
+          version !== conversationVersionRef.current ||
+          !Array.isArray(data.conversations)
+        ) {
+          return;
+        }
+        const currentActiveId = activeIdRef.current;
+        const next = (data.conversations as Conversation[])
+          .map((conversation) =>
+            conversation.id === currentActiveId
+              ? { ...conversation, unread: 0 }
+              : conversation
+          )
+          .sort(
+            (a, b) =>
+              (b.lastMessageAt ?? b.createdAt) -
+              (a.lastMessageAt ?? a.createdAt)
+          );
+        setConversations(next);
+      } catch {
+      } finally {
+        if (!cancelled) timeout = setTimeout(refresh, 5000);
+      }
+    }
+    timeout = setTimeout(refresh, 5000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [router]);
+
+  function handleSelect(id: number) {
+    conversationVersionRef.current += 1;
+    activeIdRef.current = id;
+    setActiveId(id);
+    // Optimistically clear the unread badge; the server marks it read on open.
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, unread: 0 } : c))
+    );
+  }
 
   function upsertConversation(conv: Conversation) {
     setConversations((prev) => {
@@ -42,21 +110,26 @@ export function ChatApp({
   }
 
   function handleCreated(conv: Conversation) {
+    conversationVersionRef.current += 1;
+    activeIdRef.current = conv.id;
     upsertConversation(conv);
     setActiveId(conv.id);
     setShowNew(false);
   }
 
   function handleSent(convId: number, msg: ChatMessage) {
+    conversationVersionRef.current += 1;
     setConversations((prev) =>
       prev
         .map((c) =>
           c.id === convId
-            ? {
-                ...c,
-                lastText: msg.text,
-                lastMessageAt: msg.createdAt,
-              }
+              ? {
+                  ...c,
+                  lastText: msg.text,
+                  lastMessageAt: msg.createdAt,
+                  unread: 0,
+                }
+
             : c
         )
         .sort(
@@ -64,6 +137,12 @@ export function ChatApp({
             (b.lastMessageAt ?? b.createdAt) - (a.lastMessageAt ?? a.createdAt)
         )
     );
+  }
+
+  function handleBack() {
+    conversationVersionRef.current += 1;
+    activeIdRef.current = null;
+    setActiveId(null);
   }
 
   return (
@@ -100,8 +179,7 @@ export function ChatApp({
           <Sidebar
             conversations={conversations}
             activeId={activeId}
-            onSelect={(id) => setActiveId(id)}
-            meId={me.id}
+            onSelect={handleSelect}
           />
         </aside>
 
@@ -116,7 +194,7 @@ export function ChatApp({
               conversation={active}
               meId={me.id}
               onSent={handleSent}
-              onBack={() => setActiveId(null)}
+              onBack={handleBack}
             />
           ) : (
             <EmptyState onNew={() => setShowNew(true)} />

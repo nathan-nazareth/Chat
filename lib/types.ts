@@ -10,6 +10,7 @@ export type Conversation = {
   lastText: string | null;
   lastMessageAt: number | null;
   createdAt: number;
+  unread: number;
 };
 
 export type ChatMessage = {

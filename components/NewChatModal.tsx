@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { Conversation, PublicUser } from "@/lib/types";
 
 export function NewChatModal({
@@ -14,16 +15,19 @@ export function NewChatModal({
   onClose: () => void;
   onCreated: (conv: Conversation) => void;
 }) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [users, setUsers] = useState<PublicUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
@@ -32,33 +36,43 @@ export function NewChatModal({
   }, [onClose]);
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = query.trim();
     if (q.length < 2) {
+      setLoading(false);
       setUsers([]);
       setError(null);
       return;
     }
+
+    const controller = new AbortController();
     setLoading(true);
-    debounceRef.current = setTimeout(async () => {
+    const timeout = setTimeout(async () => {
       try {
         const res = await fetch(
-          `/api/users/search?q=${encodeURIComponent(q)}`
+          `/api/users/search?q=${encodeURIComponent(q)}`,
+          { signal: controller.signal }
         );
+        if (res.status === 401 || res.status === 403) {
+          router.replace(res.status === 403 ? "/profile" : "/auth");
+          router.refresh();
+          return;
+        }
         if (!res.ok) throw new Error();
         const data = await res.json();
+        if (controller.signal.aborted) return;
         setUsers(data.users as PublicUser[]);
         setError(null);
       } catch {
-        setError("Search failed");
+        if (!controller.signal.aborted) setError("Search failed");
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }, 220);
     return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      clearTimeout(timeout);
+      controller.abort();
     };
-  }, [query]);
+  }, [query, router]);
 
   async function startChat(user: PublicUser) {
     setCreating(user.id);
@@ -69,6 +83,11 @@ export function NewChatModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user.id }),
       });
+      if (res.status === 401 || res.status === 403) {
+        router.replace(res.status === 403 ? "/profile" : "/auth");
+        router.refresh();
+        return;
+      }
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.error || "Failed");
@@ -88,12 +107,17 @@ export function NewChatModal({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-chat-title"
         className="w-full max-w-md bg-[#11111a] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-800">
-          <h2 className="font-semibold">New chat</h2>
+          <h2 id="new-chat-title" className="font-semibold">New chat</h2>
           <button
+            type="button"
+            aria-label="Close"
             onClick={onClose}
             className="text-zinc-500 hover:text-zinc-300 rounded-md w-7 h-7 grid place-items-center"
           >

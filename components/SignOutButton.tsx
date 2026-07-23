@@ -6,13 +6,22 @@ import { useState } from "react";
 export function SignOutButton({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
   return (
     <button
       onClick={async () => {
         setLoading(true);
-        await fetch("/api/auth/signout", { method: "POST" });
-        router.push("/auth");
-        router.refresh();
+        setFailed(false);
+        try {
+          const res = await fetch("/api/auth/signout", { method: "POST" });
+          if (!res.ok) throw new Error("Sign out failed");
+          router.push("/auth");
+          router.refresh();
+        } catch {
+          setFailed(true);
+        } finally {
+          setLoading(false);
+        }
       }}
       disabled={loading}
       className={
@@ -21,7 +30,7 @@ export function SignOutButton({ compact = false }: { compact?: boolean }) {
           : "rounded-xl border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
       }
     >
-      {loading ? "…" : "Sign out"}
+      {loading ? "…" : failed ? "Try again" : "Sign out"}
     </button>
   );
 }

@@ -1,12 +1,20 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
+import { getUserById } from "@/lib/db";
 import ProfileForm from "@/components/ProfileForm";
 
 export default async function ProfilePage() {
   const session = await getSession();
   if (!session.userId) redirect("/auth");
 
-  if (session.displayName && session.username) redirect("/");
+  const user = await getUserById(session.userId);
+  if (!user) redirect("/auth");
+  if (user.profile_completed_at) redirect("/");
+  // A user without a password must complete /api/auth/signup-password
+  // before they can finalize their profile. Otherwise /api/profile would
+  // leave the account stuck in the "profile_complete && no password" state
+  // described in lib/db.ts:setProfile.
+  if (!user.password_hash) redirect("/auth");
 
   return (
     <main className="min-h-full flex items-center justify-center px-4">

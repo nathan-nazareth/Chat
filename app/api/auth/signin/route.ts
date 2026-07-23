@@ -6,35 +6,53 @@ import { getSession } from "@/lib/session";
 import { take } from "@/lib/rateLimit";
 
 const Body = z.object({
-  email: z.string().email(),
-  password: z.string().min(1).max(128),
+  email: z.string().trim().max(254).email(),
+  // bcrypt only incorporates the first 72 bytes of the input; reject longer
+  // passwords up front so the user is aware rather than silently authenticating
+  // against the truncated prefix.
+  password: z
+    .string()
+    .min(1)
+    .max(128)
+    .refine(
+      (v) => Buffer.byteLength(v, "utf8") <= 72,
+      "Password is too long"
+    ),
 });
 
 const RL_IP_LIMIT = 10;
+const RL_EMAIL_LIMIT = 10;
 const RL_WINDOW_MS = 10 * 60 * 1000;
+const DUMMY_PASSWORD_HASH =
+  "$2a$12$OkSCNbTWWOwo.TWdewT4neYEeiWAp8n7lq9hOP.eFVFbclRLnkYFe";
 
 function clientIp(req: NextRequest): string {
-  return (
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    req.headers.get("x-real-ip") ||
-    "unknown"
-  );
+  // Trust the connection peer (`req.ip`) or `x-real-ip` (set by Vercel at
+  // the edge). `x-forwarded-for` is client-controlled and must not be used
+  // to key rate-limit buckets.
+  return req.headers.get("x-real-ip") || req.ip || "unknown";
 }
 
 export async function POST(req: NextRequest) {
-  const ip = clientIp(req);
-  if (!take(`signin:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS)) {
-    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
-  }
-
   const json = await req.json().catch(() => null);
   const parsed = Body.safeParse(json);
   if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
   const email = parsed.data.email.toLowerCase();
+  const ip = clientIp(req);
+  if (!take(`signin:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS)) {
+    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
+  }
+  if (!take(`signin:email:${email}`, RL_EMAIL_LIMIT, RL_WINDOW_MS)) {
+    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
+  }
+
   const user = await getUserByEmail(email);
   const stored = user?.password_hash;
-  const ok = stored ? await bcrypt.compare(parsed.data.password, stored) : false;
+  const ok = await bcrypt.compare(
+    parsed.data.password,
+    stored ?? DUMMY_PASSWORD_HASH
+  );
   if (!user || !stored || !ok) {
     return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
   }
@@ -42,9 +60,10 @@ export async function POST(req: NextRequest) {
   const session = await getSession();
   session.userId = user.id;
   session.email = user.email;
-  if (user.display_name) session.displayName = user.display_name;
-  if (user.username) session.username = user.username;
-  if (!user.profile_completed_at) session.pendingSignupEmail = user.email;
+  session.displayName = user.display_name ?? undefined;
+  session.username = user.username ?? undefined;
+  session.profileCompleted = Boolean(user.profile_completed_at);
+  session.pendingSignupEmail = user.profile_completed_at ? undefined : user.email;
   await session.save();
 
   return NextResponse.json({

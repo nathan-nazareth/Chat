@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Mode = "signin" | "signup";
@@ -19,79 +19,133 @@ export default function AuthPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [devCode, setDevCode] = useState<string | null>(null);
+  const actionInFlightRef = useRef(false);
 
   useEffect(() => {
     setError(null);
-    setInfo(null);
-    setDevCode(null);
+    setPasswordError(null);
+    if (step.name === "email") {
+      setInfo(null);
+      setDevCode(null);
+      setCode("");
+      setPassword("");
+    }
   }, [step.name]);
 
   async function sendOtp(purpose: "signup" | "signin", targetEmail: string) {
+    if (actionInFlightRef.current) return false;
+    actionInFlightRef.current = true;
     setLoading(true);
     setError(null);
+    setPasswordError(null);
+    setInfo(null);
+    setDevCode(null);
     try {
       const res = await fetch("/api/otp/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: targetEmail, purpose }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to send OTP");
-      if (data.devCode) setDevCode(data.devCode);
-      setInfo("We sent a 6-digit code to your email.");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Failed to send OTP");
+      if (data?.devCode) setDevCode(data.devCode);
+      // The server returns {ok: true} for blocked cases (account already
+      // exists with password, or passwordless account in signin mode) to
+      // avoid email-enumeration leaks. It signals whether a code was
+      // actually sent via the `sent` field so the UI doesn't strand the
+      // user on the OTP step waiting for a code that will never arrive.
+      const sent = data?.sent !== false;
+      setInfo(
+        purpose === "signin"
+          ? "If your account is set up for sign-in codes, a 6-digit code has been sent. If you don't receive one, try signing in with your password or sign up instead."
+          : "If the address is eligible, a 6-digit code has been sent."
+      );
+      return sent;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send OTP");
+      return false;
     } finally {
+      actionInFlightRef.current = false;
       setLoading(false);
     }
   }
 
-  async function verifyOtp(purpose: "signup" | "signin", pw?: string) {
+  async function verifyOtp(purpose: "signup" | "signin") {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
     setLoading(true);
     setError(null);
     try {
       const res = await fetch("/api/otp/verify", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, code, purpose, password: pw }),
+        body: JSON.stringify({ email, code, purpose }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Invalid code");
-      if (data.stage === "need_password") {
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Invalid code");
+      if (data?.stage === "need_password") {
         setStep({ name: "password", mode: "signup" });
         return;
       }
-      finishAuth();
+      finishAuth(data?.stage);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid code");
     } finally {
+      actionInFlightRef.current = false;
+      setLoading(false);
+    }
+  }
+
+  async function completeSignupWithPassword() {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/signup-password", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Sign-up failed");
+      finishAuth(data?.stage);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Sign-up failed");
+    } finally {
+      actionInFlightRef.current = false;
       setLoading(false);
     }
   }
 
   async function signInWithPassword() {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
     setLoading(true);
     setError(null);
+    setPasswordError(null);
     try {
       const res = await fetch("/api/auth/signin", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Sign-in failed");
-      finishAuth();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Sign-in failed");
+      finishAuth(data?.stage);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Sign-in failed");
+      setPasswordError(e instanceof Error ? e.message : "Sign-in failed");
     } finally {
+      actionInFlightRef.current = false;
       setLoading(false);
     }
   }
 
-  function finishAuth() {
-    router.push("/profile");
+  function finishAuth(stage?: string) {
+    router.push(stage === "ready" ? "/" : "/profile");
     router.refresh();
   }
 
@@ -112,8 +166,9 @@ export default function AuthPage() {
               loading={loading}
               onSubmit={async () => {
                 if (mode === "signup") {
-                  await sendOtp("signup", email);
-                  setStep({ name: "otp", mode: "signup" });
+                  if (await sendOtp("signup", email)) {
+                    setStep({ name: "otp", mode: "signup" });
+                  }
                 } else {
                   setStep({ name: "signin-method", email });
                 }
@@ -123,9 +178,19 @@ export default function AuthPage() {
 
           {step.name === "signin-method" && (
             <div className="space-y-3">
+              {info && (
+                <p className="text-xs text-emerald-400">{info}</p>
+              )}
+              {error && (
+                <p className="text-sm text-red-400">{error}</p>
+              )}
               <button
                 className="w-full rounded-xl bg-white text-black font-medium py-2.5 hover:bg-zinc-200 transition"
-                onClick={() => sendOtp("signin", email).then(() => setStep({ name: "otp", mode: "signin" }))}
+                onClick={async () => {
+                  if (await sendOtp("signin", email)) {
+                    setStep({ name: "otp", mode: "signin" });
+                  }
+                }}
                 disabled={loading}
               >
                 Email me a code
@@ -135,12 +200,13 @@ export default function AuthPage() {
                 password={password}
                 setPassword={setPassword}
                 loading={loading}
-                error={error}
+                error={passwordError}
                 onSubmit={signInWithPassword}
               />
               <button
-                className="text-xs text-zinc-400 hover:text-zinc-200"
+                className="text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
                 onClick={() => setStep({ name: "email" })}
+                disabled={loading}
               >
                 ← Use a different email
               </button>
@@ -165,16 +231,21 @@ export default function AuthPage() {
 
           {step.name === "password" && (
             <PasswordSetupStep
+              email={email}
               password={password}
               setPassword={setPassword}
               loading={loading}
               error={error}
-              onSubmit={() => verifyOtp("signup", password)}
+              onSubmit={completeSignupWithPassword}
+              onBack={() => setStep({ name: "email" })}
             />
           )}
 
  {error && step.name === "email" && (
             <p className="mt-3 text-sm text-red-400">{error}</p>
+          )}
+          {info && step.name === "email" && (
+            <p className="mt-3 text-xs text-emerald-400">{info}</p>
           )}
         </div>
 
@@ -182,8 +253,9 @@ export default function AuthPage() {
           <p className="text-center text-sm text-zinc-400 mt-6">
             {mode === "signup" ? "Already have an account?" : "New here?"}{" "}
             <button
-              className="text-white underline-offset-4 hover:underline"
+              className="text-white underline-offset-4 hover:underline disabled:opacity-50"
               onClick={() => setMode(mode === "signup" ? "signin" : "signup")}
+              disabled={loading}
             >
               {mode === "signup" ? "Sign in" : "Create one"}
             </button>
@@ -254,7 +326,7 @@ function OtpStep(props: {
       className="space-y-3"
     >
       <p className="text-sm text-zinc-300">
-        Enter the 6-digit code we sent to <span className="font-medium">{props.email}</span>.
+        Enter the 6-digit code for <span className="font-medium">{props.email}</span> below.
       </p>
       {props.info && <p className="text-xs text-emerald-400">{props.info}</p>}
       {props.devCode && (
@@ -266,6 +338,8 @@ function OtpStep(props: {
         </div>
       )}
       <input
+        aria-label="One-time code"
+        autoComplete="one-time-code"
         inputMode="numeric"
         pattern="[0-9]*"
         autoFocus
@@ -285,10 +359,20 @@ function OtpStep(props: {
         {props.loading ? "Verifying…" : "Verify"}
       </button>
       <div className="flex justify-between text-xs text-zinc-400">
-        <button type="button" onClick={props.onBack} className="hover:text-zinc-200">
+        <button
+          type="button"
+          onClick={props.onBack}
+          disabled={props.loading}
+          className="hover:text-zinc-200 disabled:opacity-50"
+        >
           ← Change email
         </button>
-        <button type="button" onClick={props.onResend} className="hover:text-zinc-200">
+        <button
+          type="button"
+          onClick={props.onResend}
+          disabled={props.loading}
+          className="hover:text-zinc-200 disabled:opacity-50"
+        >
           Resend code
         </button>
       </div>
@@ -333,11 +417,13 @@ function PasswordSigninForm(props: {
 }
 
 function PasswordSetupStep(props: {
+  email: string;
   password: string;
   setPassword: (v: string) => void;
   loading: boolean;
   error: string | null;
   onSubmit: () => void;
+  onBack: () => void;
 }) {
   return (
     <form
@@ -347,7 +433,9 @@ function PasswordSetupStep(props: {
       }}
       className="space-y-3"
     >
-      <p className="text-sm text-zinc-300">Create a password (8+ characters).</p>
+      <p className="text-sm text-zinc-300">
+        Create a password for <span className="font-medium">{props.email}</span> (8+ characters).
+      </p>
       <input
         type="password"
         required
@@ -365,6 +453,14 @@ function PasswordSetupStep(props: {
         className="w-full rounded-xl bg-white text-black font-medium py-2.5 hover:bg-zinc-200 disabled:opacity-50 transition"
       >
         {props.loading ? "Creating account…" : "Create account"}
+      </button>
+      <button
+        type="button"
+        onClick={props.onBack}
+        disabled={props.loading}
+        className="block text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+      >
+        ← Change email
       </button>
     </form>
   );

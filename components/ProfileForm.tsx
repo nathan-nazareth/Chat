@@ -16,19 +16,26 @@ export default function ProfileForm() {
         e.preventDefault();
         setLoading(true);
         setError(null);
-        const res = await fetch("/api/profile", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ displayName, username }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setError(data.error || "Failed");
+        try {
+          const res = await fetch("/api/profile", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ displayName, username }),
+          });
+          const data = await res.json().catch(() => null);
+          if (res.status === 401) {
+            router.replace("/auth");
+            router.refresh();
+            return;
+          }
+          if (!res.ok) throw new Error(data?.error || "Failed to save profile");
+          router.push("/");
+          router.refresh();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Failed to save profile");
+        } finally {
           setLoading(false);
-          return;
         }
-        router.push("/");
-        router.refresh();
       }}
       className="space-y-3"
     >

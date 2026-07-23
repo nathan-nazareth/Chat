@@ -14,9 +14,24 @@ export async function requireUser(): Promise<Authed | Unauthed> {
   }
   const user = await getUserById(session.userId);
   if (!user) {
+    await session.destroy();
     return {
       error: NextResponse.json({ error: "Not authenticated" }, { status: 401 }),
     };
   }
-  return { userId: user.id };
+  if (!user.profile_completed_at) {
+    return {
+      error: NextResponse.json(
+        { error: "Profile not completed" },
+        { status: 403 }
+      ),
+    };
+  }
+  if (!session.profileCompleted) {
+    session.profileCompleted = true;
+    session.displayName = user.display_name ?? undefined;
+    session.username = user.username ?? undefined;
+    await session.save();
+  }
+  return { userId: session.userId };
 }
