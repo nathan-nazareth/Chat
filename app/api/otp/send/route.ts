@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createOtp, discardOtp, getUserByEmail } from "@/lib/db";
+import { createOtp, getUserByEmail } from "@/lib/db";
 import { generateOtp, hashOtp, sendOtpEmail, OTP_CONFIG } from "@/lib/otp";
 import { take, reset } from "@/lib/rateLimit";
 
@@ -90,7 +90,13 @@ export async function POST(req: NextRequest) {
     try {
       delivery = await sendOtpEmail(email, code, purpose);
     } catch (error) {
-      await discardOtp(otpId);
+      // Email delivery failed but the OTP row is the only thing standing between
+      // the user and verification (the devCode we return below is just a copy
+      // of that same code). Deleting it here would burn the user's only valid
+      // code while the response still claims success, leaving the user with a
+      // stranding "Invalid or expired code" they can't recover from. Keep the
+      // OTP and let verification use either the email (eventually) or the
+      // devCode returned in this response.
       reset(`otp:email:${email}`);
       console.error("[otp/send] email delivery failed:", error);
       delivery = { delivered: "console" };
