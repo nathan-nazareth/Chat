@@ -34,16 +34,6 @@ function formatDateSeparator(ts: number): string {
   });
 }
 
-function sameDay(a: number, b: number): boolean {
-  const da = new Date(a);
-  const db = new Date(b);
-  return (
-    da.getFullYear() === db.getFullYear() &&
-    da.getMonth() === db.getMonth() &&
-    da.getDate() === db.getDate()
-  );
-}
-
 /** Should the message show a timestamp? True when it's the last in a group
  *  from the same sender within a 2-minute window, or the last message overall. */
 function isGroupEnd(messages: ChatMessage[], idx: number): boolean {
