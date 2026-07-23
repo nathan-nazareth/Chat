@@ -23,13 +23,31 @@ const Body = z.object({
 const RL_IP_LIMIT = 10;
 const RL_EMAIL_LIMIT = 10;
 const RL_WINDOW_MS = 10 * 60 * 1000;
-// Real bcrypt hash of an unguessable value. Used as the comparison target
-// when the supplied email does not exist, so the request takes the same
-// ~100ms regardless of whether the user is real. This is a timing-attack
-// mitigation, not placeholder data — do NOT replace with anything shorter
-// than a real bcrypt hash or the constant-time property is lost.
-const TIMING_EQUALIZER_HASH =
-  "$2a$12$OkSCNbTWWOwo.TWdewT4neYEeiWAp8n7lq9hOP.eFVFbclRLnkYFe";
+
+// Match the signup cost so a non-existent user takes the same time to reject
+// as an existing wrong-password user — closes a timing-attack side channel
+// that could distinguish "user exists" from "user doesn't exist" via response
+// latency. (Previous version used a hardcoded cost-12 hash while signup was
+// at cost 10, making the equalizer 2x slower than the real comparison.)
+const BCRYPT_COST = 10;
+
+// One-time generated dummy hash used when the email is not found, so bcrypt
+// still does the same amount of work. We generate this lazily on first use
+// and cache it for the process lifetime (cost 10 ≈ 60-100ms per generate,
+// so we don't want to regenerate per request).
+let cachedDummyHash: Promise<string> | null = null;
+function getDummyHash(): Promise<string> {
+  if (!cachedDummyHash) {
+    // Hash of an unguessable 32-byte random value, so no real password can
+    // ever match it. `crypto.randomBytes` ensures the input is unique per
+    // cold start, which makes the hash itself unique too — but bcrypt's
+    // salt ensures that even with the same input two hashes differ, so
+    // this works regardless of whether the input varies.
+    const rand = require("node:crypto").randomBytes(32).toString("hex");
+    cachedDummyHash = bcrypt.hash(rand, BCRYPT_COST);
+  }
+  return cachedDummyHash;
+}
 
 function clientIp(req: NextRequest): string {
   // Trust the connection peer (`req.ip`) or `x-real-ip` (set by Vercel at
@@ -64,7 +82,7 @@ export async function POST(req: NextRequest) {
     const stored = user?.password_hash;
     const ok = await bcrypt.compare(
       parsed.data.password,
-      stored ?? TIMING_EQUALIZER_HASH
+      stored ?? (await getDummyHash())
     );
     if (!user || !stored || !ok) {
       console.warn("[WARN] [auth/signin] invalid credentials email=%s", email);
