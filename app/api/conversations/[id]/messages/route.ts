@@ -34,6 +34,8 @@ export async function GET(
   });
 }
 
+// PATCH fetches messages and marks unread ones as read atomically.
+// The ConversationView client uses this on its 4s polling interval.
 export async function PATCH(
   _req: NextRequest,
   { params }: { params: { id: string } }

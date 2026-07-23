@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   if (auth.error) return auth.error;
 
   const ip = clientIp(req);
-  if (!take(`search:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS)) {
+  if (!(await take(`search:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS))) {
     return NextResponse.json(
       { error: "Too many requests. Try again later." },
       { status: 429 }

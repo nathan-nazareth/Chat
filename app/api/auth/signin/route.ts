@@ -34,40 +34,59 @@ function clientIp(req: NextRequest): string {
 }
 
 export async function POST(req: NextRequest) {
-  const json = await req.json().catch(() => null);
-  const parsed = Body.safeParse(json);
-  if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  try {
+    const json = await req.json().catch(() => null);
+    const parsed = Body.safeParse(json);
+    if (!parsed.success) {
+      console.warn("[WARN] [auth/signin] invalid request body");
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
 
-  const email = parsed.data.email.toLowerCase();
-  const ip = clientIp(req);
-  if (!take(`signin:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS)) {
-    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
+    const email = parsed.data.email.toLowerCase();
+    const ip = clientIp(req);
+    console.log("[INFO] [auth/signin] attempt email=%s ip=%s", email, ip);
+
+    if (!(await take(`signin:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS))) {
+      console.warn("[WARN] [auth/signin] rate limit ip=%s", ip);
+      return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
+    }
+    if (!(await take(`signin:email:${email}`, RL_EMAIL_LIMIT, RL_WINDOW_MS))) {
+      console.warn("[WARN] [auth/signin] rate limit email=%s", email);
+      return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
+    }
+
+    const user = await getUserByEmail(email);
+    const stored = user?.password_hash;
+    const ok = await bcrypt.compare(
+      parsed.data.password,
+      stored ?? DUMMY_PASSWORD_HASH
+    );
+    if (!user || !stored || !ok) {
+      console.warn("[WARN] [auth/signin] invalid credentials email=%s", email);
+      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    }
+
+    const session = await getSession();
+    session.userId = user.id;
+    session.email = user.email;
+    session.displayName = user.display_name ?? undefined;
+    session.username = user.username ?? undefined;
+    session.profileCompleted = Boolean(user.profile_completed_at);
+    try {
+      await session.save();
+    } catch (saveErr) {
+      console.error("[ERROR] [auth/signin] session save failed:", saveErr);
+      return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+    }
+
+    console.log("[INFO] [auth/signin] success email=%s stage=%s", email, user.profile_completed_at ? "ready" : "need_profile");
+
+    return NextResponse.json({
+      ok: true,
+      stage: user.profile_completed_at ? "ready" : "need_profile",
+    });
+  } catch (error) {
+    console.error("[ERROR] [auth/signin] unhandled error:", error);
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
   }
-  if (!take(`signin:email:${email}`, RL_EMAIL_LIMIT, RL_WINDOW_MS)) {
-    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
-  }
-
-  const user = await getUserByEmail(email);
-  const stored = user?.password_hash;
-  const ok = await bcrypt.compare(
-    parsed.data.password,
-    stored ?? DUMMY_PASSWORD_HASH
-  );
-  if (!user || !stored || !ok) {
-    return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-  }
-
-  const session = await getSession();
-  session.userId = user.id;
-  session.email = user.email;
-  session.displayName = user.display_name ?? undefined;
-  session.username = user.username ?? undefined;
-  session.profileCompleted = Boolean(user.profile_completed_at);
-  session.pendingSignupEmail = user.profile_completed_at ? undefined : user.email;
-  await session.save();
-
-  return NextResponse.json({
-    ok: true,
-    stage: user.profile_completed_at ? "ready" : "need_profile",
-  });
 }

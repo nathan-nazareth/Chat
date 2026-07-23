@@ -86,7 +86,8 @@ function n(v: unknown): number {
   if (typeof v === "number") return v;
   if (typeof v === "bigint") return Number(v);
   if (typeof v === "string") return Number(v);
-  return NaN;
+  console.warn("[WARN] [db] n() received unexpected type:", typeof v, v);
+  return 0;
 }
 
 export type User = {
@@ -130,37 +131,6 @@ export async function getUserByUsername(
   });
   const row = rs.rows[0] as unknown as User | undefined;
   return row ? { ...row, id: n(row.id) } : undefined;
-}
-
-export async function createUser(email: string): Promise<User> {
-  await ensureSchema();
-  const now = Date.now();
-  const info = await getClient().execute({
-    sql: "INSERT INTO users (email, created_at) VALUES (?, ?)",
-    args: [email.toLowerCase(), now],
-  });
-  const created = await getUserById(n(info.lastInsertRowid));
-  if (!created) throw new Error("Failed to create user");
-  return created;
-}
-
-export async function setPasswordHash(
-  userId: number,
-  hash: string
-): Promise<void> {
-  await ensureSchema();
-  await getClient().execute({
-    sql: "UPDATE users SET password_hash = ? WHERE id = ?",
-    args: [hash, userId],
-  });
-}
-
-export async function markEmailVerified(userId: number): Promise<void> {
-  await ensureSchema();
-  await getClient().execute({
-    sql: "UPDATE users SET email_verified_at = ? WHERE id = ?",
-    args: [Date.now(), userId],
-  });
 }
 
 export async function setProfile(
@@ -233,14 +203,6 @@ export async function findActiveOtpByHash(
   return row ? { id: n(row.id) } : undefined;
 }
 
-export async function discardOtp(id: number): Promise<void> {
-  await ensureSchema();
-  await getClient().execute({
-    sql: "DELETE FROM otps WHERE id = ? AND consumed_at IS NULL",
-    args: [id],
-  });
-}
-
 export async function consumeActiveOtp(
   email: string,
   purpose: "signup" | "signin",
@@ -253,17 +215,6 @@ export async function consumeActiveOtp(
           WHERE email = ? AND purpose = ? AND code_hash = ?
             AND consumed_at IS NULL AND expires_at > ?`,
     args: [now, email.toLowerCase(), purpose, codeHash, now],
-  });
-  return rs.rowsAffected === 1;
-}
-
-export async function consumeOtpById(id: number): Promise<boolean> {
-  await ensureSchema();
-  const now = Date.now();
-  const rs = await getClient().execute({
-    sql: `UPDATE otps SET consumed_at = ?
-          WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`,
-    args: [now, id, now],
   });
   return rs.rowsAffected === 1;
 }
@@ -336,10 +287,13 @@ export async function completeSignup(
         });
         row = existing.rows[0] as unknown as User | undefined;
       }
-      await tx.commit();
+      // Check the row state inside the transaction, before commit, so a
+      // concurrent insert/update can't slip between commit and the check.
       if (!row || row.password_hash || row.profile_completed_at) {
+        await tx.commit();
         return { status: "account_exists" };
       }
+      await tx.commit();
       return { status: "ok", user: { ...row, id: n(row.id) } };
     }
 
@@ -371,7 +325,9 @@ export async function completeSignup(
 
 // ---------- Search / conversations / messages ----------
 
-export type PublicUser = {
+// Raw DB row shape for the public-facing subset of users. Distinct from the
+// camelCase API type in `@/lib/types`; the API route is the translation point.
+type PublicUserRow = {
   id: number;
   display_name: string | null;
   username: string | null;
@@ -398,7 +354,7 @@ export async function searchUsers(
   query: string,
   currentUserId: number,
   limit = 10
-): Promise<PublicUser[]> {
+): Promise<PublicUserRow[]> {
   await ensureSchema();
   const q = query.trim().toLowerCase().replace(/^@/, "");
   if (!q) return [];
@@ -416,7 +372,7 @@ export async function searchUsers(
     args: [currentUserId, like, like, limit],
   });
   return rs.rows.map((r) => {
-    const row = r as unknown as PublicUser;
+    const row = r as unknown as PublicUserRow;
     return { ...row, id: n(row.id) };
   });
 }
@@ -491,17 +447,50 @@ export async function listConversations(
   userId: number
 ): Promise<ConversationWithPeer[]> {
   await ensureSchema();
+  // Single-pass aggregate via window functions so the per-row work is O(1)
+  // regardless of conversation count. The previous correlated-subquery
+  // form ran 2*N subqueries (last_text + unread), which degrades quickly
+  // once a user has dozens of conversations. We materialize the unread
+  // total for *my* conversations in a CTE (filtered once) and then LEFT
+  // JOIN, so the cost is one sequential scan over `messages` rather than
+  // N index seeks.
   const rs = await getClient().execute({
-    sql: `SELECT
-            c.*,
+    sql: `WITH mine AS (
+            SELECT id FROM conversations
+            WHERE user_a_id = ? OR user_b_id = ?
+          ),
+          last_msg AS (
+            SELECT m.conversation_id, m.text,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY m.conversation_id
+                     ORDER BY m.created_at DESC, m.id DESC
+                   ) AS rn
+            FROM messages m
+            WHERE m.conversation_id IN (SELECT id FROM mine)
+          ),
+          unread AS (
+            SELECT m.conversation_id, COUNT(*) AS unread
+            FROM messages m
+            WHERE m.conversation_id IN (SELECT id FROM mine)
+              AND m.sender_id != ?
+              AND m.is_read = 0
+            GROUP BY m.conversation_id
+          )
+          SELECT
+            c.id,
+            c.user_a_id,
+            c.user_b_id,
+            c.created_at,
+            c.last_message_at,
             CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END AS peer_id,
             u.display_name AS peer_display_name,
             u.username      AS peer_username,
-            (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_text,
-            (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.sender_id != ? AND m.is_read = 0) AS unread
+            last_msg.text   AS last_text,
+            COALESCE(unread.unread, 0) AS unread
           FROM conversations c
           JOIN users u ON u.id = CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END
-          WHERE c.user_a_id = ? OR c.user_b_id = ?
+          LEFT JOIN last_msg ON last_msg.conversation_id = c.id AND last_msg.rn = 1
+          LEFT JOIN unread   ON unread.conversation_id   = c.id
           ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC`,
     args: [userId, userId, userId, userId, userId],
   });
@@ -516,18 +505,6 @@ export async function listConversations(
       unread: n(row.unread),
     };
   });
-}
-
-export async function getConversationById(
-  id: number
-): Promise<ConversationRow | undefined> {
-  await ensureSchema();
-  const rs = await getClient().execute({
-    sql: "SELECT * FROM conversations WHERE id = ?",
-    args: [id],
-  });
-  const row = rs.rows[0] as unknown as ConversationRow | undefined;
-  return row ? { ...row, id: n(row.id) } : undefined;
 }
 
 export async function getLastMessageText(
@@ -685,15 +662,4 @@ export async function createMessage(
   } finally {
     tx.close();
   }
-}
-
-export async function markConversationRead(
-  conversationId: number,
-  userId: number
-): Promise<void> {
-  await ensureSchema();
-  await getClient().execute({
-    sql: "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ? AND is_read = 0",
-    args: [conversationId, userId],
-  });
 }

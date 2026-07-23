@@ -35,24 +35,49 @@ export function ChatApp({
 
   // Live cross-device updates: refresh the conversation list (previews, order,
   // unread badges) periodically so messages sent from other devices appear.
+  //
+  // Two fixes vs. the previous version:
+  //   1. Single in-flight fetch at a time. The old code scheduled the next
+  //      poll in `finally` before the previous fetch resolved, so on a slow
+  //      network requests piled up and arrived out of order — newer previews
+  //      could be overwritten by stale ones.
+  //   2. Backoff on errors so a transient 5xx doesn't lock us into a tight
+  //      retry loop hammering the server.
   useEffect(() => {
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout> | null = null;
-    const controller = new AbortController();
+    let inflight = false;
+    let consecutiveFailures = 0;
+
+    function schedule(delay: number) {
+      if (cancelled) return;
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(refresh, delay);
+    }
+
     async function refresh() {
+      if (cancelled || inflight) return;
+      inflight = true;
+      const controller = new AbortController();
       const version = conversationVersionRef.current;
       try {
         const res = await fetch("/api/conversations", {
           cache: "no-store",
           signal: controller.signal,
         });
+        if (cancelled) return;
         if (res.status === 401 || res.status === 403) {
           cancelled = true;
           router.replace(res.status === 403 ? "/profile" : "/auth");
           router.refresh();
           return;
         }
-        if (!res.ok) return;
+        if (!res.ok) {
+          consecutiveFailures++;
+          // 1s, 2s, 4s, capped at 30s. Resets on the next successful fetch.
+          schedule(Math.min(30_000, 1_000 * 2 ** Math.min(consecutiveFailures, 5)));
+          return;
+        }
         const data = await res.json();
         if (
           cancelled ||
@@ -74,15 +99,20 @@ export function ChatApp({
               (a.lastMessageAt ?? a.createdAt)
           );
         setConversations(next);
+        consecutiveFailures = 0;
+        schedule(5_000);
       } catch {
+        if (cancelled) return;
+        consecutiveFailures++;
+        schedule(Math.min(30_000, 1_000 * 2 ** Math.min(consecutiveFailures, 5)));
       } finally {
-        if (!cancelled) timeout = setTimeout(refresh, 5000);
+        inflight = false;
+        controller.abort();
       }
     }
-    timeout = setTimeout(refresh, 5000);
+    schedule(1_000);
     return () => {
       cancelled = true;
-      controller.abort();
       if (timeout) clearTimeout(timeout);
     };
   }, [router]);

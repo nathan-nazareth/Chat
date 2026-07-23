@@ -298,7 +298,7 @@ function EmailStep(props: {
         disabled={props.loading}
         className="w-full rounded-xl bg-white text-black font-medium py-2.5 hover:bg-zinc-200 disabled:opacity-50 transition"
       >
-        {props.loading ? "Sending…" : props.mode === "signup" ? "Continue" : "Continue"}
+        {props.loading ? "Sending…" : "Continue"}
       </button>
     </form>
   );

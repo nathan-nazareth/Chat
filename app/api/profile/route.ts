@@ -23,15 +23,19 @@ function clientIp(req: NextRequest): string {
 }
 
 export async function POST(req: NextRequest) {
-  // Authenticate before applying the per-IP rate limit so an unauthenticated
-  // attacker cannot exhaust the bucket and lock out the (small) pool of
-  // legitimate users on the same IP. The limit is intended to stop an
-  // authenticated client enumerating or race-colliding usernames.
-  const session = await getSession();
-  if (!session.userId) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  try {
+    // Authenticate before applying the per-IP rate limit so an unauthenticated
+    // attacker cannot exhaust the bucket and lock out the (small) pool of
+    // legitimate users on the same IP. The limit is intended to stop an
+    // authenticated client enumerating or race-colliding usernames.
+    const session = await getSession();
+    if (!session.userId) {
+      console.warn("[WARN] [profile] not authenticated");
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
 
-  const ip = clientIp(req);
-  if (!take(`profile:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS)) {
+    const ip = clientIp(req);
+    if (!(await take(`profile:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS))) {
     return NextResponse.json(
       { error: "Too many requests. Try again later." },
       { status: 429 }
@@ -88,7 +92,15 @@ export async function POST(req: NextRequest) {
   session.displayName = parsed.data.displayName;
   session.username = parsed.data.username;
   session.profileCompleted = true;
-  session.pendingSignupEmail = undefined;
-  await session.save();
+  try {
+    await session.save();
+  } catch (saveErr) {
+    console.error("[ERROR] [profile] session save failed:", saveErr);
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+  }
   return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("[ERROR] [profile] unhandled error:", error);
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+  }
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createOtp, getUserByEmail } from "@/lib/db";
 import { generateOtp, hashOtp, sendOtpEmail, OTP_CONFIG } from "@/lib/otp";
-import { take, reset } from "@/lib/rateLimit";
+import { take } from "@/lib/rateLimit";
 
 const Body = z.object({
   email: z.string().trim().max(254).email(),
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     // Always rate-limit per IP so the endpoint can't be abused to amplify
     // load against the database.
-    if (!take(`otp:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS)) {
+    if (!(await take(`otp:ip:${ip}`, RL_IP_LIMIT, RL_WINDOW_MS))) {
       return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
     }
 
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     // how many requests they get before a 429. The probe bucket is consumed
     // for calls we silently short-circuit; the delivery bucket is consumed
     // when we actually issue a code.
-    if (!take(`otp:email:${email}`, RL_EMAIL_LIMIT, RL_WINDOW_MS)) {
+    if (!(await take(`otp:email:${email}`, RL_EMAIL_LIMIT, RL_WINDOW_MS))) {
       return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
     }
 
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     const signinBlocked = purpose === "signin" && !existing?.password_hash;
 
     if (signupBlocked || signinBlocked) {
-      if (!take(`otp:probe:${email}`, RL_PROBE_LIMIT, RL_WINDOW_MS)) {
+      if (!(await take(`otp:probe:${email}`, RL_PROBE_LIMIT, RL_WINDOW_MS))) {
         return NextResponse.json(
           { error: "Too many requests. Try again later." },
           { status: 429 }
@@ -63,10 +63,9 @@ export async function POST(req: NextRequest) {
     }
 
     let code = generateOtp();
-    let otpId: number | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        otpId = await createOtp(email, purpose, hashOtp(code), OTP_CONFIG.ttlMs);
+        await createOtp(email, purpose, hashOtp(code), OTP_CONFIG.ttlMs);
         break;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";
@@ -75,16 +74,8 @@ export async function POST(req: NextRequest) {
           code = generateOtp();
           continue;
         }
-        reset(`otp:email:${email}`);
         throw err;
       }
-    }
-    if (otpId === undefined) {
-      reset(`otp:email:${email}`);
-      return NextResponse.json(
-        { error: "Couldn't send OTP, try again." },
-        { status: 500 }
-      );
     }
     let delivery: { delivered: "email" | "console" };
     try {
@@ -97,15 +88,15 @@ export async function POST(req: NextRequest) {
       // stranding "Invalid or expired code" they can't recover from. Keep the
       // OTP and let verification use either the email (eventually) or the
       // devCode returned in this response.
-      reset(`otp:email:${email}`);
       console.error("[otp/send] email delivery failed:", error);
       delivery = { delivered: "console" };
     }
 
     const body: Record<string, unknown> = { ok: true, sent: true };
     // Expose the code to the client whenever email delivery isn't available
-    // (no API key, or Resend errored) so signup is never blocked.
-    if (delivery.delivered === "console") {
+    // (no API key, or Resend errored) so signup is never blocked in dev.
+    // In production, never leak the raw code — the user must rely on email.
+    if (delivery.delivered === "console" && process.env.NODE_ENV !== "production") {
       body.devCode = code;
     }
     return NextResponse.json(body);

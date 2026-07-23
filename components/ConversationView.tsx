@@ -24,16 +24,21 @@ export function ConversationView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const forceScrollRef = useRef(true);
   const nearBottomRef = useRef(true);
-  // Start one below zero so the first pre-decrement produces a strictly
-  // negative id; --0 evaluates to -0 in JavaScript, and mergeMessages keys
-  // optimistics off `m.id < 0`, which would misclassify -0 as a server
-  // message and skip the optimistic/polling reconciliation path.
-  const optimisticIdRef = useRef(-1);
+  // Start well below zero and never decrement past -Number.MAX_SAFE_INTEGER.
+  // The previous seed (-1) was fragile: --0 evaluates to -0 in JavaScript,
+  // and mergeMessages keys optimistics off `m.id < 0`, which would have
+  // misclassified -0 as a server message and skipped the reconciliation
+  // path. Starting at -2 makes the first send produce -3, and the bound
+  // guarantees we never produce -0 or hit the integer-precision floor.
+  const optimisticIdRef = useRef<number>(-2);
   // Mirror `sending` in a ref so synchronous re-entry (e.g. the user mashing
   // Enter on the textarea before React has flushed the `sending` state) is
   // still blocked. Without this, two synchronous submits both see
   // `sending === false` from their closure and fire two POSTs.
   const sendingRef = useRef(false);
+  // Ref to the form element so onKeyDown can submit it via native event
+  // instead of casting KeyboardEvent to FormEvent.
+  const formRef = useRef<HTMLFormElement>(null);
 
   const peerName =
     conversation.peer.displayName ?? `@${conversation.peer.username ?? "user"}`;
@@ -73,11 +78,23 @@ export function ConversationView({
       );
     }
 
+    async function markRead() {
+      try {
+        await fetch(`/api/conversations/${conversation.id}/messages`, {
+          method: "PATCH",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+      } catch {
+        // Best-effort: don't block on mark-read failure
+      }
+    }
+
     async function fetchMessages(): Promise<ChatMessage[] | null> {
       try {
         const res = await fetch(
           `/api/conversations/${conversation.id}/messages`,
-          { method: "PATCH", cache: "no-store", signal: controller.signal }
+          { method: "GET", cache: "no-store", signal: controller.signal }
         );
         if (res.status === 401 || res.status === 403) {
           if (!cancelled) {
@@ -119,6 +136,8 @@ export function ConversationView({
       // keep hammering the server with requests that will all 401/403.
       if (!cancelled) pollTimeout = setTimeout(() => refresh(false), 4000);
     }
+    // Mark messages as read once on conversation open, not on every poll tick.
+    void markRead();
     void refresh(true);
 
     return () => {
@@ -146,8 +165,16 @@ export function ConversationView({
     setSending(true);
     setError(null);
 
+    // Reset the counter when it would otherwise collide with server ids (which
+    // are positive integers). This is unreachable in practice (10^15 sends
+    // per page load) but keeps the invariant explicit.
+    const nextOptimisticId =
+      optimisticIdRef.current > Number.MIN_SAFE_INTEGER + 1
+        ? optimisticIdRef.current - 1
+        : -2;
+    optimisticIdRef.current = nextOptimisticId;
     const optimistic: ChatMessage = {
-      id: --optimisticIdRef.current,
+      id: nextOptimisticId,
       senderId: meId,
       text: trimmed,
       createdAt: Date.now(),
@@ -278,6 +305,7 @@ export function ConversationView({
       )}
 
       <form
+        ref={formRef}
         onSubmit={handleSubmit}
         className="px-3 py-3 border-t border-zinc-800/80 bg-[#0e0e15] flex items-end gap-2"
       >
@@ -291,7 +319,7 @@ export function ConversationView({
               !e.nativeEvent.isComposing
             ) {
               e.preventDefault();
-              handleSubmit(e as unknown as React.FormEvent);
+              formRef.current?.requestSubmit();
             }
           }}
           maxLength={4000}

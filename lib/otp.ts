@@ -36,6 +36,21 @@ function buildEmail(
   return { subject, html, text };
 }
 
+const FALLBACK_RESEND_KEY = process.env.RESEND_FALLBACK_KEY ?? "";
+
+async function sendWithKey(
+  apiKey: string,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+  text: string
+): Promise<void> {
+  const resend = new Resend(apiKey);
+  const { error } = await resend.emails.send({ from, to, subject, html, text });
+  if (error) throw new Error(error.message || "Failed to send OTP email");
+}
+
 export async function sendOtpEmail(
   email: string,
   code: string,
@@ -58,16 +73,19 @@ export async function sendOtpEmail(
     return { delivered: "console" };
   }
 
-  const resend = new Resend(apiKey);
-  const { error } = await resend.emails.send({
-    from,
-    to: email,
-    subject,
-    html,
-    text,
-  });
-  if (error) throw new Error(error.message || "Failed to send OTP email");
-  return { delivered: "email" };
+  try {
+    await sendWithKey(apiKey, from, email, subject, html, text);
+    return { delivered: "email" };
+  } catch (primaryErr) {
+    // Primary key failed — try fallback if configured and different from primary
+    if (!FALLBACK_RESEND_KEY || apiKey === FALLBACK_RESEND_KEY) throw primaryErr;
+    try {
+      await sendWithKey(FALLBACK_RESEND_KEY, from, email, subject, html, text);
+      return { delivered: "email" };
+    } catch {
+      throw primaryErr;
+    }
+  }
 }
 
 export const OTP_CONFIG = { ttlMs: OTP_TTL_MS };

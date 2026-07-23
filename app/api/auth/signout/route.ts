@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 
 export async function POST() {
-  const session = await getSession();
-  await session.destroy();
-  return NextResponse.json({ ok: true });
+  try {
+    const session = await getSession();
+    await session.destroy();
+    console.log("[INFO] [auth/signout] session destroyed");
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("[ERROR] [auth/signout] failed:", error);
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+  }
 }

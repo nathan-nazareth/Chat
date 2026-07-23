@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ["better-sqlite3", "sib-api-v3-sdk"],
+    serverComponentsExternalPackages: ["@libsql/client"],
   },
 };
 module.exports = nextConfig;
