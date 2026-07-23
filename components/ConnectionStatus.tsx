@@ -189,9 +189,12 @@ export function ConnectionStatus() {
       aria-live="polite"
       aria-label={label}
       aria-hidden={!visible}
+      // Push below the iPhone notch/Dynamic Island via env(safe-area-inset-top).
+      // `top: 0` on a phone with a notch would put the banner behind the clock.
+      style={{ paddingTop: "env(safe-area-inset-top)" }}
       className={`
         fixed top-0 left-0 right-0 z-50
-        flex items-center justify-center
+        flex items-start justify-center
         transition-all duration-500 ease-out
         ${visible ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0 pointer-events-none"}
       `}
