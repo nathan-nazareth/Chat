@@ -298,7 +298,7 @@ export function ConversationView({
       });
     }
     return items;
-  }, [messages, meId]);
+  }, [messages]);
 
   return (
     <>

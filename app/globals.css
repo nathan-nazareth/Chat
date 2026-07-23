@@ -39,6 +39,16 @@ body {
   -webkit-text-size-adjust: 100%;
   /* Prevent overscroll on iOS bouncing the whole page (chat-style). */
   overscroll-behavior-y: none;
+  /* iOS Safari: use the accent color when tapping links/highlights. */
+  -webkit-tap-highlight-color: rgba(129, 140, 248, 0.18);
+}
+
+/* Disable the dark blue system tap-highlight on Chrome for Android, and the
+ * grey default on iOS, for elements that look weird with a highlight
+ * (buttons inside cards, icon-only buttons). Use sparingly — most elements
+ * still want the default tap-highlight for accessibility. */
+button.tap-transparent {
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Refined scrollbars */
