@@ -13,6 +13,22 @@ export function hashOtp(code: string): string {
 
 type SendResult = { delivered: "email" | "console" };
 
+// Escape for safe HTML interpolation. The OTP is always 6 digits so this is
+// defense-in-depth — if `generateOtp` ever changes format, we still avoid
+// injecting HTML/script content into the email body.
+function escapeHtml(s: string): string {
+  return s.replace(/[<>&"']/g, (c) => {
+    switch (c) {
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case "&": return "&amp;";
+      case '"': return "&quot;";
+      case "'": return "&#39;";
+      default: return c;
+    }
+  });
+}
+
 function buildEmail(
   _email: string,
   code: string,
@@ -22,11 +38,13 @@ function buildEmail(
     purpose === "signup"
       ? "Your chat signup verification code"
       : "Your chat sign-in code";
+  const safeSubject = escapeHtml(subject);
+  const safeCode = escapeHtml(code);
   const html = `
     <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
-      <h2 style="margin:0 0 16px">${subject}</h2>
+      <h2 style="margin:0 0 16px">${safeSubject}</h2>
       <p>Your one-time code is:</p>
-      <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; margin: 24px 0;">${code}</div>
+      <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; margin: 24px 0;">${safeCode}</div>
       <p style="color:#555">This code expires in 10 minutes. If you didn't request it, ignore this email.</p>
     </div>`;
   const text =

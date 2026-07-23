@@ -46,11 +46,7 @@ function sameDay(a: number, b: number): boolean {
 
 /** Should the message show a timestamp? True when it's the last in a group
  *  from the same sender within a 2-minute window, or the last message overall. */
-function isGroupEnd(
-  messages: ChatMessage[],
-  idx: number,
-  meId: number
-): boolean {
+function isGroupEnd(messages: ChatMessage[], idx: number): boolean {
   const m = messages[idx];
   const next = messages[idx + 1];
   if (!next) return true;
@@ -297,7 +293,7 @@ export function ConversationView({
       items.push({
         kind: "message",
         msg: m,
-        showTime: isGroupEnd(messages, i, meId),
+        showTime: isGroupEnd(messages, i),
         key: m.id,
       });
     }
