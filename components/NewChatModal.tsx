@@ -27,6 +27,24 @@ export function NewChatModal({
 
   useEffect(() => {
     inputRef.current?.focus();
+    // Lock body scroll while the modal is open so the chat behind doesn't
+    // scroll on iOS Safari when the user drags inside the modal.
+    const prevOverflow = document.body.style.overflow;
+    const prevPosition = document.body.style.position;
+    const prevTop = document.body.style.top;
+    const prevWidth = document.body.style.width;
+    const scrollY = window.scrollY;
+    document.body.style.overflow = "hidden";
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = "100%";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.position = prevPosition;
+      document.body.style.top = prevTop;
+      document.body.style.width = prevWidth;
+      window.scrollTo(0, scrollY);
+    };
   }, []);
 
   useEffect(() => {
@@ -105,53 +123,94 @@ export function NewChatModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm px-4 pt-[12vh] pb-8"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 backdrop-blur-sm px-4 pt-[12vh] pb-8 animate-fade-in"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-chat-title"
-        className="w-full max-w-md bg-[#11111a] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden"
+        className="w-full max-w-md bg-surface-raised backdrop-blur-xl border border-zinc-700/50 rounded-2xl shadow-elevated overflow-hidden animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-800">
-          <h2 id="new-chat-title" className="font-semibold">New chat</h2>
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-zinc-800/60">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/20 grid place-items-center">
+              <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+            </div>
+            <h2 id="new-chat-title" className="font-semibold text-zinc-100">
+              New conversation
+            </h2>
+          </div>
           <button
             type="button"
             aria-label="Close"
             onClick={onClose}
-            className="text-zinc-500 hover:text-zinc-300 rounded-md w-7 h-7 grid place-items-center"
+            className="text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 rounded-lg min-w-[44px] min-h-[44px] w-11 h-11 grid place-items-center transition-colors"
           >
-            ✕
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
 
-        <div className="px-3 py-3">
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by name or @username…"
-            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/60"
-          />
+        {/* Search Input */}
+        <div className="px-4 py-3">
+          <div className="relative">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by name or username..."
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="search"
+              type="search"
+              style={{ fontSize: "16px" }}
+              className="w-full bg-zinc-900/80 border border-zinc-700/50 rounded-xl pl-10 pr-4 py-3 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all duration-200"
+            />
+          </div>
         </div>
 
-        <div className="max-h-[50vh] overflow-y-auto px-2 pb-3">
+        {/* Results */}
+        <div className="max-h-[50vh] overflow-y-auto px-3 pb-4">
           {query.trim().length < 2 ? (
-            <p className="text-center text-xs text-zinc-600 py-6">
-              Type at least 2 characters to search.
-            </p>
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <div className="w-12 h-12 rounded-xl bg-zinc-800/50 border border-zinc-700/50 grid place-items-center mb-3">
+                <svg className="w-6 h-6 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+                </svg>
+              </div>
+              <p className="text-xs text-zinc-500">
+                Type at least 2 characters to search
+              </p>
+            </div>
           ) : loading ? (
-            <p className="text-center text-xs text-zinc-500 py-6">
-              Searching…
-            </p>
+            <div className="flex items-center justify-center py-8">
+              <div className="flex items-center gap-3 text-zinc-500">
+                <div className="w-4 h-4 border-2 border-zinc-600 border-t-accent rounded-full animate-spin" />
+                <span className="text-xs">Searching...</span>
+              </div>
+            </div>
           ) : users.length === 0 ? (
-            <p className="text-center text-xs text-zinc-500 py-6">
-              No users found.
-            </p>
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <div className="w-12 h-12 rounded-xl bg-zinc-800/50 border border-zinc-700/50 grid place-items-center mb-3">
+                <svg className="w-6 h-6 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.182 16.318A4.486 4.486 0 0012.016 15a4.486 4.486 0 00-3.198 1.318M21 12a9 9 0 11-18 0 9 9 0 0118 0zM9.75 9.75c0 .414-.168.75-.375.75S9 10.164 9 9.75 9.168 9 9.375 9s.375.336.375.75zm-.375 0h.008v.015h-.008V9.75zm5.625 0c0 .414-.168.75-.375.75s-.375-.336-.375-.75.168-.75.375-.75.375.336.375.75zm-.375 0h.008v.015h-.008V9.75z" />
+                </svg>
+              </div>
+              <p className="text-xs text-zinc-500">No users found</p>
+            </div>
           ) : (
-            <ul className="space-y-0.5">
+            <ul className="space-y-1">
               {users.map((u) => {
                 const name = u.displayName ?? `@${u.username ?? "user"}`;
                 const already = existingPeerIds.has(u.id) || u.id === meId;
@@ -160,25 +219,29 @@ export function NewChatModal({
                     <button
                       disabled={already || creating !== null}
                       onClick={() => startChat(u)}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-zinc-800/60 disabled:opacity-40 disabled:hover:bg-transparent"
+                      className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-zinc-800/40 disabled:opacity-40 disabled:hover:bg-transparent transition-all duration-200 group"
                     >
-                      <div className="w-9 h-9 rounded-full bg-indigo-500 grid place-items-center text-white text-sm font-semibold">
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent to-purple-500 grid place-items-center text-white text-sm font-semibold shadow-glow group-hover:scale-105 transition-transform duration-200">
                         {name.slice(0, 1).toUpperCase()}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{name}</p>
+                        <p className="truncate text-sm font-medium text-zinc-100">
+                          {name}
+                        </p>
                         {u.username && (
                           <p className="truncate text-xs text-zinc-500">
                             @{u.username}
                           </p>
                         )}
                       </div>
-                      <span className="text-xs text-zinc-500">
-                        {creating === u.id
-                          ? "…"
-                          : already
-                            ? "exists"
-                            : "chat"}
+                      <span className="text-xs text-zinc-500 group-hover:text-accent transition-colors">
+                        {creating === u.id ? (
+                          <div className="w-4 h-4 border-2 border-zinc-600 border-t-accent rounded-full animate-spin" />
+                        ) : already ? (
+                          "Existing"
+                        ) : (
+                          "Chat"
+                        )}
                       </span>
                     </button>
                   </li>
@@ -188,8 +251,11 @@ export function NewChatModal({
           )}
         </div>
 
+        {/* Error */}
         {error && (
-          <div className="px-4 pb-3 text-xs text-rose-400">{error}</div>
+          <div className="px-4 py-3 bg-rose-500/10 border-t border-rose-500/20">
+            <p className="text-xs text-rose-400 text-center">{error}</p>
+          </div>
         )}
       </div>
     </div>

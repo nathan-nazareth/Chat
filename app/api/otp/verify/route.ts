@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ ok: true, stage: "need_password" });
       }
-      const passwordHash = await bcrypt.hash(password, 12);
+      const passwordHash = await bcrypt.hash(password, 10);
       const result = await completeSignup(email, codeHash, passwordHash);
       if (result.status === "invalid_otp") {
         console.warn("[WARN] [otp/verify] OTP already consumed or expired email=%s", email);

@@ -10,6 +10,8 @@ export default function ProfileForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const usernameValid = username.length >= 3 && /^[a-z0-9_]+$/.test(username);
+
   return (
     <form
       onSubmit={async (e) => {
@@ -37,42 +39,72 @@ export default function ProfileForm() {
           setLoading(false);
         }
       }}
-      className="space-y-3"
+      className="space-y-5"
     >
-      <label className="block text-sm text-zinc-300">
-        Name
+      <div>
+        <label className="block text-sm font-medium text-zinc-300 mb-2">
+          Display name
+        </label>
         <input
           required
           autoFocus
+          autoComplete="name"
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
           maxLength={40}
-          className="mt-1 w-full rounded-xl bg-zinc-900 border border-zinc-800 px-3 py-2.5 outline-none focus:border-zinc-600"
+          enterKeyHint="next"
+          style={{ fontSize: "16px" }}
+          className="w-full rounded-xl bg-zinc-900/80 border border-zinc-700/50 px-4 py-3 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all duration-200"
           placeholder="Your name"
         />
-      </label>
-      <label className="block text-sm text-zinc-300">
-        Username
-        <input
-          required
-          value={username}
-          onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))}
-          minLength={3}
-          maxLength={24}
-          className="mt-1 w-full rounded-xl bg-zinc-900 border border-zinc-800 px-3 py-2.5 outline-none focus:border-zinc-600"
-          placeholder="your_handle"
-        />
-        <span className="block mt-1 text-xs text-zinc-500">
-          lowercase letters, numbers, and underscores
-        </span>
-      </label>
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-zinc-300 mb-2">
+          Username
+        </label>
+        <div className="relative">
+          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-zinc-500 select-none">@</span>
+          <input
+            required
+            autoComplete="username"
+            inputMode="text"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="done"
+            value={username}
+            onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))}
+            minLength={3}
+            maxLength={24}
+            style={{ fontSize: "16px" }}
+            className="w-full rounded-xl bg-zinc-900/80 border border-zinc-700/50 pl-8 pr-4 py-3 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all duration-200"
+            placeholder="your_handle"
+          />
+        </div>
+        <div className="flex items-center justify-between mt-2">
+          <p className="text-[10px] text-zinc-500">
+            3-24 characters, lowercase letters, numbers, underscores
+          </p>
+          {username.length > 0 && (
+            <span className={`text-[10px] ${usernameValid ? "text-emerald-400" : "text-zinc-500"}`}>
+              {usernameValid
+                ? "Looks good"
+                : `${Math.max(0, 3 - username.length)} more character${3 - username.length === 1 ? "" : "s"} needed`}
+            </span>
+          )}
+        </div>
+      </div>
+      {error && (
+        <div className="rounded-xl bg-rose-500/10 border border-rose-500/20 p-3">
+          <p className="text-xs text-rose-400">{error}</p>
+        </div>
+      )}
       <button
         type="submit"
-        disabled={loading}
-        className="w-full rounded-xl bg-white text-black font-medium py-2.5 hover:bg-zinc-200 disabled:opacity-50 transition"
+        disabled={loading || !displayName.trim() || !usernameValid}
+        className="w-full rounded-xl bg-accent hover:bg-accent-hover text-white font-medium py-3 shadow-glow hover:shadow-glow-lg disabled:opacity-50 disabled:hover:bg-accent disabled:shadow-none transition-all duration-200 active:scale-[0.98]"
       >
-        {loading ? "Saving…" : "Continue"}
+        {loading ? "Saving..." : "Continue"}
       </button>
     </form>
   );

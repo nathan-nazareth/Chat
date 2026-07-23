@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
         );
       }
     } else {
-      const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+      const passwordHash = await bcrypt.hash(parsed.data.password, 10);
       const updated = await setPasswordHashByEmail(email, passwordHash);
       if (updated) {
         user = updated;

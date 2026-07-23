@@ -2,17 +2,153 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: dark; }
-html, body { height: 100%; }
-body {
-  background: #0b0b10;
-  color: #e8e8ea;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  color-scheme: dark;
+  --accent: #818cf8;
 }
 
-/* Thin, dark scrollbars */
-* { scrollbar-width: thin; scrollbar-color: #2a2a35 transparent; }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: #2a2a35; border-radius: 8px; }
-*::-webkit-scrollbar-thumb:hover { background: #3a3a48; }
+html {
+  scroll-behavior: smooth;
+}
+
+html, body {
+  height: 100%;
+  /* Use dynamic viewport height so the layout accounts for the on-screen
+   * keyboard on mobile (iOS Safari, Android Chrome). `h-dvh` is now
+   * widely supported; we still keep `height: 100%` as a fallback. */
+  height: 100dvh;
+}
+
+body {
+  background: #0a0a0c;
+  color: #fafafa;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Respect iOS safe areas (notch, home indicator) and Android gesture bar. */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  /* Disable double-tap-to-zoom and pull-to-refresh that interfere with
+   * touch interactions on buttons/inputs (Chrome for Android). */
+  touch-action: manipulation;
+  /* Prevent text-size-adjust on rotate (iOS Safari). */
+  -webkit-text-size-adjust: 100%;
+  /* Prevent overscroll on iOS bouncing the whole page (chat-style). */
+  overscroll-behavior-y: none;
+}
+
+/* Refined scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(63, 63, 70, 0.4) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(63, 63, 70, 0.4);
+  border-radius: 10px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(82, 82, 91, 0.6);
+}
+
+/* Glass morphism utility */
+@layer utilities {
+  .glass {
+    background: rgba(24, 24, 27, 0.6);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .glass-strong {
+    background: rgba(24, 24, 27, 0.8);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  .glow-border {
+    border: 1px solid rgba(129, 140, 248, 0.2);
+  }
+}
+
+/* Subtle ambient background */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 40%, rgba(129, 140, 248, 0.025) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 80% at 80% 20%, rgba(168, 85, 247, 0.015) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 50% at 50% 80%, rgba(99, 102, 241, 0.01) 0%, transparent 60%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Noise texture overlay for depth */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Focus styles */
+:focus-visible {
+  outline: 2px solid rgba(129, 140, 248, 0.5);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Selection */
+::selection {
+  background: rgba(129, 140, 248, 0.25);
+}
+
+/* Smooth transitions for interactive elements */
+button, a, input, textarea {
+  transition: all 0.15s ease;
+}
+
+/* Keyboard shortcut styling */
+kbd {
+  font-family: 'Inter', ui-monospace, monospace;
+  font-size: inherit;
+  line-height: 1;
+}
+
+/* Textarea auto-height is handled in JS (ConversationView.resizeTextarea).
+ * Avoid `field-sizing: content` here — it's only supported in Safari 17+ /
+ * Chrome 123+ and would race with the manual height set by JS, producing a
+ * flicker on the first input event. */
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

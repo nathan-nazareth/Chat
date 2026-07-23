@@ -3,6 +3,8 @@ import { requireUser } from "@/lib/auth";
 import { searchUsers } from "@/lib/db";
 import { take } from "@/lib/rateLimit";
 
+export const dynamic = "force-dynamic";
+
 const RL_IP_LIMIT = 60;
 const RL_WINDOW_MS = 10 * 60 * 1000;
 

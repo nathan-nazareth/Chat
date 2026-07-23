@@ -23,7 +23,12 @@ const Body = z.object({
 const RL_IP_LIMIT = 10;
 const RL_EMAIL_LIMIT = 10;
 const RL_WINDOW_MS = 10 * 60 * 1000;
-const DUMMY_PASSWORD_HASH =
+// Real bcrypt hash of an unguessable value. Used as the comparison target
+// when the supplied email does not exist, so the request takes the same
+// ~100ms regardless of whether the user is real. This is a timing-attack
+// mitigation, not placeholder data — do NOT replace with anything shorter
+// than a real bcrypt hash or the constant-time property is lost.
+const TIMING_EQUALIZER_HASH =
   "$2a$12$OkSCNbTWWOwo.TWdewT4neYEeiWAp8n7lq9hOP.eFVFbclRLnkYFe";
 
 function clientIp(req: NextRequest): string {
@@ -59,7 +64,7 @@ export async function POST(req: NextRequest) {
     const stored = user?.password_hash;
     const ok = await bcrypt.compare(
       parsed.data.password,
-      stored ?? DUMMY_PASSWORD_HASH
+      stored ?? TIMING_EQUALIZER_HASH
     );
     if (!user || !stored || !ok) {
       console.warn("[WARN] [auth/signin] invalid credentials email=%s", email);

@@ -1,8 +1,67 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ChatMessage, Conversation } from "@/lib/types";
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                           */
+/* ------------------------------------------------------------------ */
+
+function formatMessageTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatDateSeparator(ts: number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.floor((today.getTime() - msgDay.getTime()) / 86_400_000);
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) {
+    return d.toLocaleDateString([], { weekday: "long" });
+  }
+  return d.toLocaleDateString([], {
+    month: "long",
+    day: "numeric",
+    year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+  });
+}
+
+function sameDay(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+/** Should the message show a timestamp? True when it's the last in a group
+ *  from the same sender within a 2-minute window, or the last message overall. */
+function isGroupEnd(
+  messages: ChatMessage[],
+  idx: number,
+  meId: number
+): boolean {
+  const m = messages[idx];
+  const next = messages[idx + 1];
+  if (!next) return true;
+  if (next.senderId !== m.senderId) return true;
+  if (next.createdAt - m.createdAt > 120_000) return true;
+  return false;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Component                                                         */
+/* ------------------------------------------------------------------ */
 
 export function ConversationView({
   conversation,
@@ -22,27 +81,27 @@ export function ConversationView({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const forceScrollRef = useRef(true);
   const nearBottomRef = useRef(true);
-  // Start well below zero and never decrement past -Number.MAX_SAFE_INTEGER.
-  // The previous seed (-1) was fragile: --0 evaluates to -0 in JavaScript,
-  // and mergeMessages keys optimistics off `m.id < 0`, which would have
-  // misclassified -0 as a server message and skipped the reconciliation
-  // path. Starting at -2 makes the first send produce -3, and the bound
-  // guarantees we never produce -0 or hit the integer-precision floor.
   const optimisticIdRef = useRef<number>(-2);
-  // Mirror `sending` in a ref so synchronous re-entry (e.g. the user mashing
-  // Enter on the textarea before React has flushed the `sending` state) is
-  // still blocked. Without this, two synchronous submits both see
-  // `sending === false` from their closure and fire two POSTs.
   const sendingRef = useRef(false);
-  // Ref to the form element so onKeyDown can submit it via native event
-  // instead of casting KeyboardEvent to FormEvent.
   const formRef = useRef<HTMLFormElement>(null);
 
   const peerName =
     conversation.peer.displayName ?? `@${conversation.peer.username ?? "user"}`;
 
+  /* ---- Auto-resize textarea ---- */
+  const resizeTextarea = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  }, []);
+
+  useEffect(resizeTextarea, [text, resizeTextarea]);
+
+  /* ---- Fetch & poll ---- */
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -80,13 +139,13 @@ export function ConversationView({
 
     async function markRead() {
       try {
-        await fetch(`/api/conversations/${conversation.id}/messages`, {
-          method: "PATCH",
+        await fetch(`/api/conversations/${conversation.id}/read`, {
+          method: "POST",
           cache: "no-store",
           signal: controller.signal,
         });
       } catch {
-        // Best-effort: don't block on mark-read failure
+        // Best-effort
       }
     }
 
@@ -131,12 +190,8 @@ export function ConversationView({
         );
         setLoading(false);
       }
-      // fetchMessages flips `cancelled = true` on auth failures so the router
-      // can navigate away. Bail before scheduling another poll so we don't
-      // keep hammering the server with requests that will all 401/403.
       if (!cancelled) pollTimeout = setTimeout(() => refresh(false), 4000);
     }
-    // Mark messages as read once on conversation open, not on every poll tick.
     void markRead();
     void refresh(true);
 
@@ -147,6 +202,7 @@ export function ConversationView({
     };
   }, [conversation.id, router]);
 
+  /* ---- Auto-scroll ---- */
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -157,6 +213,7 @@ export function ConversationView({
     }
   }, [messages]);
 
+  /* ---- Submit ---- */
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = text.trim();
@@ -165,9 +222,6 @@ export function ConversationView({
     setSending(true);
     setError(null);
 
-    // Reset the counter when it would otherwise collide with server ids (which
-    // are positive integers). This is unreachable in practice (10^15 sends
-    // per page load) but keeps the invariant explicit.
     const nextOptimisticId =
       optimisticIdRef.current > Number.MIN_SAFE_INTEGER + 1
         ? optimisticIdRef.current - 1
@@ -208,9 +262,6 @@ export function ConversationView({
         throw new Error("Send failed");
       }
       setMessages((prev) => {
-        // If a poll already merged `saved` into state (race: server saved the
-        // message before our POST response was processed), just drop the
-        // optimistic; otherwise swap it in. Prevents duplicates in either case.
         if (prev.some((m) => m.id === saved.id)) {
           return prev.filter((m) => m.id !== optimistic.id);
         }
@@ -228,22 +279,50 @@ export function ConversationView({
     }
   }
 
+  /* ---- Memoised grouped render data ---- */
+  const renderItems = useMemo(() => {
+    type Item =
+      | { kind: "separator"; date: string; key: string }
+      | { kind: "message"; msg: ChatMessage; showTime: boolean; key: number | string };
+    const items: Item[] = [];
+    let lastDate: string | null = null;
+
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      const dateLabel = formatDateSeparator(m.createdAt);
+      if (dateLabel !== lastDate) {
+        items.push({ kind: "separator", date: dateLabel, key: `d-${dateLabel}` });
+        lastDate = dateLabel;
+      }
+      items.push({
+        kind: "message",
+        msg: m,
+        showTime: isGroupEnd(messages, i, meId),
+        key: m.id,
+      });
+    }
+    return items;
+  }, [messages, meId]);
+
   return (
     <>
-      <header className="flex items-center gap-3 px-4 py-3 border-b border-zinc-800/80 bg-[#0e0e15]">
+      {/* Header */}
+      <header className="flex items-center gap-3 px-4 py-3 border-b border-zinc-800/60 bg-surface-raised backdrop-blur-xl">
         <button
           type="button"
           aria-label="Back to conversations"
           onClick={onBack}
-          className="md:hidden rounded-lg px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800/60"
+          className="md:hidden rounded-lg min-w-[44px] min-h-[44px] p-2.5 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors flex items-center justify-center"
         >
-          ←
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+          </svg>
         </button>
-        <div className="w-9 h-9 rounded-full bg-indigo-500 grid place-items-center text-white text-sm font-semibold">
+        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent to-purple-500 grid place-items-center text-white text-sm font-semibold shadow-glow">
           {peerName.slice(0, 1).toUpperCase()}
         </div>
         <div className="min-w-0">
-          <p className="font-semibold truncate">{peerName}</p>
+          <p className="font-semibold truncate text-zinc-100">{peerName}</p>
           {conversation.peer.username && (
             <p className="text-xs text-zinc-500 truncate">
               @{conversation.peer.username}
@@ -252,6 +331,7 @@ export function ConversationView({
         </div>
       </header>
 
+      {/* Messages */}
       <div
         ref={scrollRef}
         role="log"
@@ -263,78 +343,181 @@ export function ConversationView({
           nearBottomRef.current =
             el.scrollHeight - el.scrollTop - el.clientHeight < 120;
         }}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-2"
+        className="flex-1 overflow-y-auto px-4 py-6"
       >
         {loading ? (
-          <div className="text-center text-sm text-zinc-500 py-8">
-            Loading messages…
-          </div>
+          <MessageSkeleton />
         ) : error === "Couldn't load messages" ? (
-          <div className="text-center text-sm text-rose-400 py-8">
-            Couldn&apos;t load messages. Retrying…
+          <div className="flex items-center justify-center py-12">
+            <div className="flex items-center gap-3 text-rose-400">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              <span className="text-sm">Couldn&apos;t load messages. Retrying...</span>
+            </div>
           </div>
         ) : messages.length === 0 ? (
-          <div className="text-center text-sm text-zinc-500 py-8">
-            This is the start of your conversation with {peerName}.
+          <div className="flex flex-col items-center justify-center py-16 text-center animate-fade-in">
+            <div className="relative mb-5">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent/15 to-purple-500/15 border border-accent/15 grid place-items-center">
+                <svg className="w-8 h-8 text-accent/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                </svg>
+              </div>
+            </div>
+            <p className="text-sm font-medium text-zinc-300">
+              Start of your conversation
+            </p>
+            <p className="text-xs text-zinc-500 mt-1.5 max-w-[240px] leading-relaxed">
+              Send a message below to start chatting with {peerName}
+            </p>
           </div>
         ) : (
-          messages.map((m) => {
-            const mine = m.senderId === meId;
-            return (
-              <div
-                key={m.id}
-                className={`flex ${mine ? "justify-end" : "justify-start"}`}
-              >
+          <div className="space-y-0.5">
+            {renderItems.map((item) => {
+              if (item.kind === "separator") {
+                return (
+                  <div key={item.key} className="flex items-center gap-3 py-4">
+                    <div className="flex-1 h-px bg-zinc-800/60" />
+                    <span className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider shrink-0">
+                      {item.date}
+                    </span>
+                    <div className="flex-1 h-px bg-zinc-800/60" />
+                  </div>
+                );
+              }
+              const { msg, showTime } = item;
+              const mine = msg.senderId === meId;
+              return (
                 <div
-                  className={`max-w-[78%] sm:max-w-[68%] px-3.5 py-2 rounded-2xl text-sm whitespace-pre-wrap break-words ${
-                    mine
-                      ? "bg-indigo-500 text-white rounded-br-sm"
-                      : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                  key={msg.id}
+                  className={`flex ${mine ? "justify-end" : "justify-start"} ${
+                    showTime ? "mb-3" : "mb-0.5"
                   }`}
                 >
-                  {m.text}
+                  <div className="max-w-[78%] sm:max-w-[68%]">
+                    <div
+                      className={`px-3.5 py-2 text-sm whitespace-pre-wrap break-words ${
+                        mine
+                          ? `bg-gradient-to-br from-accent to-indigo-600 text-white ${
+                              showTime ? "rounded-2xl rounded-br-md" : "rounded-2xl"
+                            } shadow-glow/50`
+                          : `bg-zinc-800/80 text-zinc-100 border border-zinc-700/40 ${
+                              showTime ? "rounded-2xl rounded-bl-md" : "rounded-2xl"
+                            }`
+                      }`}
+                    >
+                      {msg.text}
+                    </div>
+                    {showTime && (
+                      <p
+                        className={`text-[10px] text-zinc-500 mt-1 ${
+                          mine ? "text-right mr-1" : "ml-1"
+                        }`}
+                      >
+                        {formatMessageTime(msg.createdAt)}
+                        {mine && msg.isRead && (
+                          <span className="ml-1.5 text-accent">seen</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
       </div>
 
+      {/* Error Banner */}
       {error && error !== "Couldn't load messages" && (
-        <div className="px-4 py-1 text-xs text-rose-400">{error}</div>
+        <div className="px-4 py-2 bg-rose-500/10 border-t border-rose-500/20 animate-slide-down">
+          <p className="text-xs text-rose-400 text-center">{error}</p>
+        </div>
       )}
 
+      {/* Input Area */}
       <form
         ref={formRef}
         onSubmit={handleSubmit}
-        className="px-3 py-3 border-t border-zinc-800/80 bg-[#0e0e15] flex items-end gap-2"
+        className="px-3 sm:px-4 py-3 border-t border-zinc-800/60 bg-surface-raised backdrop-blur-xl"
       >
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault();
-              formRef.current?.requestSubmit();
-            }
-          }}
-          maxLength={4000}
-          placeholder={`Message ${peerName}…`}
-          rows={1}
-          className="flex-1 resize-none max-h-32 bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/60"
-        />
-        <button
-          type="submit"
-          disabled={!text.trim() || sending}
-          className="rounded-xl bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 disabled:hover:bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white"
-        >
-          Send
-        </button>
+        <div className="flex items-end gap-2 sm:gap-3">
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                formRef.current?.requestSubmit();
+              }
+            }}
+            maxLength={4000}
+            placeholder={`Message ${peerName}...`}
+            rows={1}
+            aria-label={`Message ${peerName}`}
+            // Mobile keyboards: keep autocorrect on (chat is prose), disable
+            // auto-capitalize so we don't shout after every newline.
+            autoCorrect="on"
+            autoCapitalize="sentences"
+            spellCheck={true}
+            // Disable iOS's "auto" zoom-on-focus by ensuring font-size >= 16px
+            // (already satisfied by `text-sm` = 14px… bumped to base via style).
+            style={{ fontSize: "16px" }}
+            className="flex-1 resize-none bg-zinc-900/80 border border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all duration-200 min-h-[40px] max-h-32 leading-relaxed"
+          />
+          <button
+            type="submit"
+            disabled={!text.trim() || sending}
+            className="rounded-xl bg-accent hover:bg-accent-hover disabled:opacity-30 disabled:hover:bg-accent disabled:cursor-not-allowed min-w-[44px] min-h-[44px] w-11 h-11 grid place-items-center text-white shadow-glow hover:shadow-glow-lg transition-all duration-200 active:scale-90 shrink-0"
+            aria-label="Send message"
+          >
+            {sending ? (
+              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+              </svg>
+            )}
+          </button>
+        </div>
+        {text.length > 3800 && (
+          <p className="text-[10px] text-zinc-500 mt-1.5 text-right">
+            {4000 - text.length} characters remaining
+          </p>
+        )}
       </form>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Skeleton loader                                                   */
+/* ------------------------------------------------------------------ */
+
+function MessageSkeleton() {
+  return (
+    <div className="space-y-4 py-4 animate-fade-in">
+      {[0, 1, 2, 3, 4].map((i) => {
+        const isMe = i % 3 === 0;
+        const widths = ["45%", "65%", "35%", "55%", "40%"];
+        return (
+          <div
+            key={i}
+            className={`flex ${isMe ? "justify-end" : "justify-start"}`}
+          >
+            <div
+              className="h-9 rounded-2xl bg-zinc-800/40 animate-pulse"
+              style={{ width: widths[i] }}
+            />
+          </div>
+        );
+      })}
+    </div>
   );
 }

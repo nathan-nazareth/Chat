@@ -620,6 +620,22 @@ export async function listAndMarkRead(
   }
 }
 
+// Lightweight mark-read for the sidebar: just flip unread→read without
+// returning the message list. Keeps the per-poll cost low when the
+// conversation view is also polling messages independently.
+export async function markRead(
+  conversationId: number,
+  userId: number
+): Promise<number> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: `UPDATE messages SET is_read = 1
+          WHERE conversation_id = ? AND sender_id != ? AND is_read = 0`,
+    args: [conversationId, userId],
+  });
+  return n(rs.rowsAffected);
+}
+
 export async function createMessage(
   conversationId: number,
   senderId: number,

@@ -10,6 +10,8 @@ import {
   getUserById,
 } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const auth = await requireUser();
   if (auth.error) return auth.error;
