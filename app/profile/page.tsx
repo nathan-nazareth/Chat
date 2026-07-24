@@ -3,6 +3,7 @@ import { getSession } from "@/lib/session";
 import { getUserByEmail, getUserById } from "@/lib/db";
 import ProfileForm from "@/components/ProfileForm";
 import PasswordSetupForm from "@/components/PasswordSetupForm";
+import { InstallButton } from "@/components/InstallButton";
 
 export default async function ProfilePage() {
   const session = await getSession();
@@ -45,6 +46,11 @@ export default async function ProfilePage() {
           ) : (
             <ProfileForm />
           )}
+        </div>
+
+        {/* Install PWA */}
+        <div className="flex justify-center mt-4">
+          <InstallButton variant="button" className="bg-zinc-800/60 hover:bg-zinc-800 shadow-none hover:shadow-none" />
         </div>
       </div>
     </main>

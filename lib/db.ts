@@ -104,7 +104,15 @@ let initPromise: Promise<void> | null = null;
 function ensureSchema(): Promise<void> {
   if (!initPromise) {
     initPromise = (async () => {
-      for (const stmt of SCHEMA) await getClient().execute(stmt);
+      for (const stmt of SCHEMA) {
+        try {
+          await getClient().execute(stmt);
+        } catch (err: any) {
+          // Ignore "duplicate column" errors from ALTER TABLE (migration already applied)
+          if (err?.message?.includes("duplicate column")) continue;
+          throw err;
+        }
+      }
     })().catch((err) => {
       initPromise = null;
       throw err;

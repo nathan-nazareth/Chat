@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { InstallButton } from "@/components/InstallButton";
 
 type Mode = "signin" | "signup";
 type Step =
@@ -325,6 +326,13 @@ export default function AuthPage() {
               {mode === "signup" ? "Sign in" : "Create one"}
             </button>
           </p>
+        )}
+
+        {/* Install PWA */}
+        {step.name === "email" && (
+          <div className="flex justify-center mt-4">
+            <InstallButton variant="button" className="bg-zinc-800/60 hover:bg-zinc-800 shadow-none hover:shadow-none" />
+          </div>
         )}
       </div>
       )}
