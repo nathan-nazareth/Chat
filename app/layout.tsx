@@ -18,8 +18,6 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  // Required for responsive rendering. interactiveWidget=resizes-content keeps
-  // the on-screen keyboard from covering inputs (Android Chrome).
   width: "device-width",
   initialScale: 1,
   maximumScale: 5,

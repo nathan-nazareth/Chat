@@ -143,3 +143,7 @@ vite.config.ts.timestamp-*
 .vite/
 .vercel
 .data/
+
+# Serwist generated service workers
+public/sw.js
+public/swe-worker-*.js
