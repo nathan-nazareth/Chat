@@ -34,9 +34,23 @@ function formatDateSeparator(ts: number): string {
   });
 }
 
+function sameDay(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
 /** Should the message show a timestamp? True when it's the last in a group
  *  from the same sender within a 2-minute window, or the last message overall. */
-function isGroupEnd(messages: ChatMessage[], idx: number): boolean {
+function isGroupEnd(
+  messages: ChatMessage[],
+  idx: number,
+  meId: number
+): boolean {
   const m = messages[idx];
   const next = messages[idx + 1];
   if (!next) return true;
@@ -54,13 +68,11 @@ export function ConversationView({
   meId,
   onSent,
   onBack,
-  initialSearch,
 }: {
   conversation: Conversation;
   meId: number;
   onSent: (convId: number, msg: ChatMessage) => void;
   onBack: () => void;
-  initialSearch?: string | null;
 }) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -68,12 +80,6 @@ export function ConversationView({
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showSearch, setShowSearch] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
-  const [serverSearchResults, setServerSearchResults] = useState<ChatMessage[] | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const forceScrollRef = useRef(true);
@@ -84,16 +90,6 @@ export function ConversationView({
 
   const peerName =
     conversation.peer.displayName ?? `@${conversation.peer.username ?? "user"}`;
-
-  /* ---- Activate initial search when jumping from global search ---- */
-  const initialSearchHandled = useRef(false);
-  useEffect(() => {
-    if (initialSearch && initialSearchHandled.current === false) {
-      initialSearchHandled.current = true;
-      setShowSearch(true);
-      setSearchQuery(initialSearch);
-    }
-  }, [initialSearch]);
 
   /* ---- Auto-resize textarea ---- */
   const resizeTextarea = useCallback(() => {
@@ -114,7 +110,6 @@ export function ConversationView({
 
     const controller = new AbortController();
     let pollTimeout: ReturnType<typeof setTimeout> | null = null;
-    let consecutiveFailures = 0;
 
     function mergeMessages(prev: ChatMessage[], server: ChatMessage[]): ChatMessage[] {
       const map = new Map<number, ChatMessage>();
@@ -178,30 +173,24 @@ export function ConversationView({
 
     async function refresh(initial: boolean) {
       if (document.visibilityState === "hidden") {
-        pollTimeout = setTimeout(() => refresh(initial), 4_000);
+        pollTimeout = setTimeout(() => refresh(initial), 4000);
         return;
       }
       const server = await fetchMessages();
       if (cancelled) return;
       if (server === null) {
-        consecutiveFailures++;
         if (initial) {
           setError("Couldn't load messages");
           setLoading(false);
         }
-        // Exponential backoff on persistent errors: 1s, 2s, 4s, ..., 30s.
-        // Without this, a 500 storm hammers the server every 4s forever.
-        const delay = Math.min(30_000, 1_000 * 2 ** Math.min(consecutiveFailures, 5));
-        if (!cancelled) pollTimeout = setTimeout(() => refresh(false), delay);
-        return;
+      } else {
+        setMessages((prev) => mergeMessages(prev, server));
+        setError((current) =>
+          current === "Couldn't load messages" ? null : current
+        );
+        setLoading(false);
       }
-      consecutiveFailures = 0;
-      setMessages((prev) => mergeMessages(prev, server));
-      setError((current) =>
-        current === "Couldn't load messages" ? null : current
-      );
-      setLoading(false);
-      if (!cancelled) pollTimeout = setTimeout(() => refresh(false), 4_000);
+      if (!cancelled) pollTimeout = setTimeout(() => refresh(false), 4000);
     }
     void markRead();
     void refresh(true);
@@ -290,98 +279,7 @@ export function ConversationView({
     }
   }
 
-  /* ---- Display messages: server results during search, full list otherwise ---- */
-  const displayMessages = useMemo(
-    () => serverSearchResults ?? messages,
-    [serverSearchResults, messages]
-  );
-
-  /* ---- Search logic ---- */
-  const matchingMessageIds = useMemo(() => {
-    if (serverSearchResults) return null;
-    if (!searchQuery.trim()) return null;
-    const q = searchQuery.toLowerCase();
-    const ids = new Set<number>();
-    for (const m of displayMessages) {
-      if (m.text.toLowerCase().includes(q)) ids.add(m.id);
-    }
-    return ids;
-  }, [displayMessages, searchQuery, serverSearchResults]);
-
-  const matchIds = useMemo(() => {
-    if (serverSearchResults) {
-      return displayMessages.map((m) => m.id);
-    }
-    if (!matchingMessageIds) return [];
-    return displayMessages
-      .filter((m) => matchingMessageIds.has(m.id))
-      .map((m) => m.id);
-  }, [displayMessages, matchingMessageIds, serverSearchResults]);
-
-  useEffect(() => {
-    setActiveMatchIndex(0);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    if (!showSearch || !searchQuery.trim() || matchIds.length === 0) return;
-    const el = document.querySelector(`[data-mid="${matchIds[activeMatchIndex]}"]`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [activeMatchIndex, showSearch, searchQuery, matchIds]);
-
-  useEffect(() => {
-    if (showSearch && searchInputRef.current) {
-      searchInputRef.current.focus();
-    }
-  }, [showSearch]);
-
-  useEffect(() => {
-    if (!showSearch) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        setShowSearch(false);
-        setSearchQuery("");
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [showSearch]);
-
-  /* ---- Server-side search fetch ---- */
-  useEffect(() => {
-    if (!showSearch || !searchQuery.trim()) {
-      setServerSearchResults(null);
-      return;
-    }
-    const controller = new AbortController();
-    let cancelled = false;
-
-    const url = new URL(`/api/conversations/${conversation.id}/messages`, window.location.origin);
-    url.searchParams.set("q", searchQuery);
-    setSearchLoading(true);
-
-    fetch(url.toString(), {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) {
-          setServerSearchResults((data.messages ?? []) as ChatMessage[]);
-          setSearchLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setSearchLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [showSearch, searchQuery, conversation.id]);
-
+  /* ---- Memoised grouped render data ---- */
   const renderItems = useMemo(() => {
     type Item =
       | { kind: "separator"; date: string; key: string }
@@ -389,8 +287,8 @@ export function ConversationView({
     const items: Item[] = [];
     let lastDate: string | null = null;
 
-    for (let i = 0; i < displayMessages.length; i++) {
-      const m = displayMessages[i];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
       const dateLabel = formatDateSeparator(m.createdAt);
       if (dateLabel !== lastDate) {
         items.push({ kind: "separator", date: dateLabel, key: `d-${dateLabel}` });
@@ -399,19 +297,12 @@ export function ConversationView({
       items.push({
         kind: "message",
         msg: m,
-        showTime: isGroupEnd(displayMessages, i),
+        showTime: isGroupEnd(messages, i, meId),
         key: m.id,
       });
     }
     return items;
-  }, [displayMessages]);
-
-  const searchEmpty = useMemo(() => {
-    if (!showSearch) return false;
-    if (searchLoading) return false;
-    if (!searchQuery.trim()) return false;
-    return displayMessages.length === 0;
-  }, [showSearch, searchLoading, searchQuery, displayMessages]);
+  }, [messages, meId]);
 
   return (
     <>
@@ -421,7 +312,7 @@ export function ConversationView({
           type="button"
           aria-label="Back to conversations"
           onClick={onBack}
-          className="md:hidden rounded-lg min-w-[44px] min-h-[44px] p-2.5 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors flex items-center justify-center"
+          className="md:hidden rounded-lg p-2 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
@@ -438,126 +329,14 @@ export function ConversationView({
             </p>
           )}
         </div>
-        <div className="flex-1" />
-        <button
-          type="button"
-          onClick={() => {
-            setShowSearch((prev) => !prev);
-            if (!showSearch) setSearchQuery("");
-          }}
-          className={`rounded-lg min-w-[44px] min-h-[44px] p-2.5 transition-colors flex items-center justify-center ${
-            showSearch
-              ? "bg-accent/15 text-accent"
-              : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
-          }`}
-          aria-label={showSearch ? "Close search" : "Search messages"}
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+        {/* E2E indicator */}
+        <div className="ml-auto flex items-center gap-1.5 text-xs text-emerald-400/70">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
-        </button>
-      </header>
-
-      {/* Search Bar */}
-      {showSearch && (
-        <div className="px-4 py-2.5 border-b border-zinc-800/60 bg-surface-base/80 backdrop-blur-sm">
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-              </svg>
-              <input
-                ref={searchInputRef}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    if (e.shiftKey) {
-                      setActiveMatchIndex((prev) =>
-                        prev > 0 ? prev - 1 : Math.max(matchIds.length - 1, 0)
-                      );
-                    } else {
-                      setActiveMatchIndex((prev) =>
-                        prev < matchIds.length - 1 ? prev + 1 : 0
-                      );
-                    }
-                  }
-                }}
-                placeholder="Search messages..."
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                enterKeyHint="search"
-                type="search"
-                style={{ fontSize: "16px" }}
-                className="w-full bg-zinc-900/60 border border-zinc-800/60 rounded-lg pl-9 pr-3 py-2 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-accent/30 transition-colors"
-              />
-            </div>
-            {matchIds.length > 0 && (
-              <span className="text-xs text-zinc-500 tabular-nums whitespace-nowrap">
-                {activeMatchIndex + 1}
-                <span className="text-zinc-600">/</span>
-                {matchIds.length}
-              </span>
-            )}
-            <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={() =>
-                  setActiveMatchIndex((prev) =>
-                    prev > 0 ? prev - 1 : Math.max(matchIds.length - 1, 0)
-                  )
-                }
-                disabled={searchQuery.trim() === "" || matchIds.length === 0}
-                className="rounded-lg min-w-[36px] min-h-[36px] p-2 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors disabled:opacity-30 disabled:pointer-events-none"
-                aria-label="Previous match"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setActiveMatchIndex((prev) =>
-                    prev < matchIds.length - 1 ? prev + 1 : 0
-                  )
-                }
-                disabled={searchQuery.trim() === "" || matchIds.length === 0}
-                className="rounded-lg min-w-[36px] min-h-[36px] p-2 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors disabled:opacity-30 disabled:pointer-events-none"
-                aria-label="Next match"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                </svg>
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setShowSearch(false);
-                setSearchQuery("");
-              }}
-              className="rounded-lg min-w-[36px] min-h-[36px] p-2 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200 transition-colors"
-              aria-label="Close search"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          {searchLoading && (
-            <div className="flex items-center justify-center gap-1.5 mt-1.5">
-              <div className="w-3 h-3 border-2 border-zinc-600/30 border-t-zinc-400 rounded-full animate-spin" />
-              <span className="text-xs text-zinc-500">Searching…</span>
-            </div>
-          )}
-          {searchEmpty && (
-            <p className="text-xs text-zinc-500 mt-1.5 text-center">No messages match &quot;{searchQuery}&quot;</p>
-          )}
+          E2E
         </div>
-      )}
+      </header>
 
       {/* Messages */}
       <div
@@ -584,7 +363,7 @@ export function ConversationView({
               <span className="text-sm">Couldn&apos;t load messages. Retrying...</span>
             </div>
           </div>
-        ) : !showSearch && messages.length === 0 ? (
+        ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center animate-fade-in">
             <div className="relative mb-5">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent/15 to-purple-500/15 border border-accent/15 grid place-items-center">
@@ -604,7 +383,6 @@ export function ConversationView({
           <div className="space-y-0.5">
             {renderItems.map((item) => {
               if (item.kind === "separator") {
-                if (matchingMessageIds) return null;
                 return (
                   <div key={item.key} className="flex items-center gap-3 py-4">
                     <div className="flex-1 h-px bg-zinc-800/60" />
@@ -616,22 +394,17 @@ export function ConversationView({
                 );
               }
               const { msg, showTime } = item;
-              if (matchingMessageIds && !matchingMessageIds.has(msg.id)) return null;
               const mine = msg.senderId === meId;
-              const isActiveMatch = serverSearchResults
-                ? matchIds[activeMatchIndex] === msg.id
-                : matchingMessageIds && matchIds[activeMatchIndex] === msg.id;
               return (
                 <div
                   key={msg.id}
-                  data-mid={msg.id}
                   className={`flex ${mine ? "justify-end" : "justify-start"} ${
                     showTime ? "mb-3" : "mb-0.5"
                   }`}
                 >
                   <div className="max-w-[78%] sm:max-w-[68%]">
                     <div
-                      className={`px-3.5 py-2 text-sm whitespace-pre-wrap break-words transition-all duration-200 ${
+                      className={`px-3.5 py-2 text-sm whitespace-pre-wrap break-words ${
                         mine
                           ? `bg-gradient-to-br from-accent to-indigo-600 text-white ${
                               showTime ? "rounded-2xl rounded-br-md" : "rounded-2xl"
@@ -639,17 +412,9 @@ export function ConversationView({
                           : `bg-zinc-800/80 text-zinc-100 border border-zinc-700/40 ${
                               showTime ? "rounded-2xl rounded-bl-md" : "rounded-2xl"
                             }`
-                      } ${
-                        isActiveMatch
-                          ? "ring-2 ring-accent shadow-glow-lg scale-[1.02]"
-                          : ""
                       }`}
                     >
-                      {searchQuery.trim() ? (
-                        <HighlightedText text={msg.text} query={searchQuery} />
-                      ) : (
-                        msg.text
-                      )}
+                      {msg.text}
                     </div>
                     {showTime && (
                       <p
@@ -702,21 +467,12 @@ export function ConversationView({
             maxLength={4000}
             placeholder={`Message ${peerName}...`}
             rows={1}
-            aria-label={`Message ${peerName}`}
-            // Mobile keyboards: keep autocorrect on (chat is prose), disable
-            // auto-capitalize so we don't shout after every newline.
-            autoCorrect="on"
-            autoCapitalize="sentences"
-            spellCheck={true}
-            // Disable iOS's "auto" zoom-on-focus by ensuring font-size >= 16px
-            // (already satisfied by `text-sm` = 14px… bumped to base via style).
-            style={{ fontSize: "16px" }}
             className="flex-1 resize-none bg-zinc-900/80 border border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all duration-200 min-h-[40px] max-h-32 leading-relaxed"
           />
           <button
             type="submit"
             disabled={!text.trim() || sending}
-            className="rounded-xl bg-accent hover:bg-accent-hover disabled:opacity-30 disabled:hover:bg-accent disabled:cursor-not-allowed min-w-[44px] min-h-[44px] w-11 h-11 grid place-items-center text-white shadow-glow hover:shadow-glow-lg transition-all duration-200 active:scale-90 shrink-0"
+            className="rounded-xl bg-accent hover:bg-accent-hover disabled:opacity-30 disabled:hover:bg-accent disabled:cursor-not-allowed w-10 h-10 grid place-items-center text-white shadow-glow hover:shadow-glow-lg transition-all duration-200 active:scale-90 shrink-0"
             aria-label="Send message"
           >
             {sending ? (
@@ -734,32 +490,6 @@ export function ConversationView({
           </p>
         )}
       </form>
-    </>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Highlighted text                                                   */
-/* ------------------------------------------------------------------ */
-
-function HighlightedText({ text, query }: { text: string; query: string }) {
-  if (!query.trim()) return <>{text}</>;
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
-  return (
-    <>
-      {parts.map((part, i) =>
-        part.toLowerCase() === query.toLowerCase() ? (
-          <mark
-            key={i}
-            className="bg-amber-400/30 text-inherit rounded-sm px-0.5"
-          >
-            {part}
-          </mark>
-        ) : (
-          part
-        )
-      )}
     </>
   );
 }

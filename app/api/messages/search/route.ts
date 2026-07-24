@@ -29,10 +29,17 @@ export async function GET(req: NextRequest) {
     const q = (url.searchParams.get("q") ?? "").slice(0, 200).trim();
 
     if (!q) {
-      return NextResponse.json({ messages: [] });
+      return NextResponse.json({ messages: [], hasMore: false });
     }
 
-    const messages = await searchAllMessages(auth.userId, q);
+    const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+    const perPage = 50;
+    const offset = (page - 1) * perPage;
+
+    // Fetch one extra row to determine whether there's a next page
+    const messages = await searchAllMessages(auth.userId, q, perPage + 1, offset);
+    const hasMore = messages.length > perPage;
+    if (hasMore) messages.pop();
 
     return NextResponse.json({
       messages: messages.map((m) => ({
@@ -48,6 +55,8 @@ export async function GET(req: NextRequest) {
           username: m.peer_username,
         },
       })),
+      hasMore,
+      page,
     });
   } catch (error) {
     console.error("[ERROR] [messages/search GET] unhandled error:", error);

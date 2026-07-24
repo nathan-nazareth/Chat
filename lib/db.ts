@@ -64,9 +64,40 @@ const SCHEMA = [
     sender_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     text            TEXT    NOT NULL CHECK (length(text) BETWEEN 1 AND 4000),
     created_at      INTEGER NOT NULL,
-    is_read         INTEGER NOT NULL DEFAULT 0
+    is_read         INTEGER NOT NULL DEFAULT 0,
+    ciphertext      TEXT,
+    iv              TEXT,
+    counter         INTEGER,
+    eph_pub         TEXT,
+    ik_pub          TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_msg_conv_time ON messages(conversation_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS user_keys (
+    user_id                INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    identity_pub           TEXT NOT NULL,
+    signed_prekey_pub      TEXT NOT NULL,
+    signed_prekey_sig      TEXT NOT NULL,
+    one_time_prekeys       TEXT NOT NULL DEFAULT '[]',
+    updated_at             INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS ratchet_sessions (
+    my_id                  INTEGER NOT NULL,
+    peer_id                INTEGER NOT NULL,
+    shared_secret          TEXT NOT NULL,
+    sending_chain_key      TEXT NOT NULL,
+    receiving_chain_key    TEXT NOT NULL,
+    send_counter           INTEGER NOT NULL DEFAULT 0,
+    recv_counter           INTEGER NOT NULL DEFAULT 0,
+    previous_send_count    INTEGER NOT NULL DEFAULT 0,
+    updated_at             INTEGER NOT NULL,
+    PRIMARY KEY (my_id, peer_id)
+  )`,
+  // Migrations for existing databases — safe to run repeatedly.
+  `ALTER TABLE messages ADD COLUMN ciphertext TEXT`,
+  `ALTER TABLE messages ADD COLUMN iv TEXT`,
+  `ALTER TABLE messages ADD COLUMN counter INTEGER`,
+  `ALTER TABLE messages ADD COLUMN eph_pub TEXT`,
+  `ALTER TABLE messages ADD COLUMN ik_pub TEXT`,
 ];
 
 let initPromise: Promise<void> | null = null;
@@ -315,8 +346,10 @@ export async function completeSignup(
       });
       row = updated.rows[0] as unknown as User | undefined;
     }
-    await tx.commit();
+    // Check the row state inside the transaction, before commit, so a
+    // concurrent insert/update can't slip between commit and the check.
     if (!row) return { status: "account_exists" };
+    await tx.commit();
     return { status: "ok", user: { ...row, id: n(row.id) } };
   } finally {
     tx.close();
@@ -348,6 +381,11 @@ export type MessageRow = {
   text: string;
   created_at: number;
   is_read: number;
+  ciphertext: string | null;
+  iv: string | null;
+  counter: number | null;
+  eph_pub: string | null;
+  ik_pub: string | null;
 };
 
 export async function searchUsers(
@@ -667,7 +705,8 @@ export async function searchMessagesInConversation(
 export async function searchAllMessages(
   userId: number,
   query: string,
-  limit = 50
+  limit = 50,
+  offset = 0
 ): Promise<(MessageRow & { peer_id: number; peer_display_name: string | null; peer_username: string | null })[]> {
   await ensureSchema();
   if (!query.trim()) return [];
@@ -684,8 +723,8 @@ export async function searchAllMessages(
           WHERE (c.user_a_id = ? OR c.user_b_id = ?)
             AND LOWER(m.text) LIKE ? ESCAPE '\\'
           ORDER BY m.created_at DESC
-          LIMIT ?`,
-    args: [userId, userId, userId, userId, like, limit],
+          LIMIT ? OFFSET ?`,
+    args: [userId, userId, userId, userId, like, limit, offset],
   });
   return rs.rows.map((r) => {
     const row = r as unknown as MessageRow & { peer_id: number; peer_display_name: string | null; peer_username: string | null };
@@ -703,15 +742,20 @@ export async function searchAllMessages(
 export async function createMessage(
   conversationId: number,
   senderId: number,
-  text: string
+  text: string,
+  ciphertext?: string,
+  iv?: string,
+  counter?: number,
+  ephPub?: string,
+  ikPub?: string
 ): Promise<MessageRow | undefined> {
   await ensureSchema();
   const now = Date.now();
   const tx = await getClient().transaction("write");
   try {
     const inserted = await tx.execute({
-      sql: `INSERT INTO messages (conversation_id, sender_id, text, created_at, is_read)
-            SELECT ?, ?, ?, ?, 0
+      sql: `INSERT INTO messages (conversation_id, sender_id, text, created_at, is_read, ciphertext, iv, counter, eph_pub, ik_pub)
+            SELECT ?, ?, ?, ?, 0, ?, ?, ?, ?, ?
             FROM conversations
             WHERE id = ? AND (user_a_id = ? OR user_b_id = ?)
             RETURNING *`,
@@ -720,6 +764,11 @@ export async function createMessage(
         senderId,
         text,
         now,
+        ciphertext ?? null,
+        iv ?? null,
+        counter ?? null,
+        ephPub ?? null,
+        ikPub ?? null,
         conversationId,
         senderId,
         senderId,
@@ -742,4 +791,139 @@ export async function createMessage(
   } finally {
     tx.close();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Key management
+// ---------------------------------------------------------------------------
+
+export async function upsertUserKeys(
+  userId: number,
+  identityPub: string,
+  signedPrekeyPub: string,
+  signedPrekeySig: string,
+  oneTimePrekeys: string[]
+): Promise<void> {
+  await ensureSchema();
+  const now = Date.now();
+  await getClient().execute({
+    sql: `INSERT INTO user_keys (user_id, identity_pub, signed_prekey_pub, signed_prekey_sig, one_time_prekeys, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            identity_pub = excluded.identity_pub,
+            signed_prekey_pub = excluded.signed_prekey_pub,
+            signed_prekey_sig = excluded.signed_prekey_sig,
+            one_time_prekeys = excluded.one_time_prekeys,
+            updated_at = excluded.updated_at`,
+    args: [userId, identityPub, signedPrekeyPub, signedPrekeySig, JSON.stringify(oneTimePrekeys), now],
+  });
+}
+
+export async function getUserKeys(userId: number): Promise<{
+  identity_pub: string;
+  signed_prekey_pub: string;
+  signed_prekey_sig: string;
+  one_time_prekeys: string[];
+} | undefined> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: "SELECT * FROM user_keys WHERE user_id = ?",
+    args: [userId],
+  });
+  const row = rs.rows[0] as unknown as {
+    identity_pub: string;
+    signed_prekey_pub: string;
+    signed_prekey_sig: string;
+    one_time_prekeys: string;
+  } | undefined;
+  if (!row) return undefined;
+  return {
+    ...row,
+    one_time_prekeys: JSON.parse(row.one_time_prekeys),
+  };
+}
+
+export async function consumeOneTimePrekey(userId: number): Promise<string | null> {
+  await ensureSchema();
+  const now = Date.now();
+  const tx = await getClient().transaction("write");
+  try {
+    const rs = await tx.execute({
+      sql: "SELECT one_time_prekeys FROM user_keys WHERE user_id = ?",
+      args: [userId],
+    });
+    const row = rs.rows[0] as unknown as { one_time_prekeys: string } | undefined;
+    if (!row) return null;
+    const keys: string[] = JSON.parse(row.one_time_prekeys);
+    if (keys.length === 0) return null;
+    const consumed = keys.shift()!;
+    await tx.execute({
+      sql: "UPDATE user_keys SET one_time_prekeys = ?, updated_at = ? WHERE user_id = ?",
+      args: [JSON.stringify(keys), now, userId],
+    });
+    await tx.commit();
+    return consumed;
+  } finally {
+    tx.close();
+  }
+}
+
+export async function upsertRatchetSession(
+  myId: number,
+  peerId: number,
+  sharedSecret: string,
+  sendingChainKey: string,
+  receivingChainKey: string,
+  sendCounter: number,
+  recvCounter: number,
+  previousSendCount: number
+): Promise<void> {
+  await ensureSchema();
+  const now = Date.now();
+  await getClient().execute({
+    sql: `INSERT INTO ratchet_sessions (my_id, peer_id, shared_secret, sending_chain_key, receiving_chain_key, send_counter, recv_counter, previous_send_count, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(my_id, peer_id) DO UPDATE SET
+            shared_secret = excluded.shared_secret,
+            sending_chain_key = excluded.sending_chain_key,
+            receiving_chain_key = excluded.receiving_chain_key,
+            send_counter = excluded.send_counter,
+            recv_counter = excluded.recv_counter,
+            previous_send_count = excluded.previous_send_count,
+            updated_at = excluded.updated_at`,
+    args: [myId, peerId, sharedSecret, sendingChainKey, receivingChainKey, sendCounter, recvCounter, previousSendCount, now],
+  });
+}
+
+export async function getRatchetSession(
+  myId: number,
+  peerId: number
+): Promise<{
+  shared_secret: string;
+  sending_chain_key: string;
+  receiving_chain_key: string;
+  send_counter: number;
+  recv_counter: number;
+  previous_send_count: number;
+} | undefined> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: "SELECT * FROM ratchet_sessions WHERE my_id = ? AND peer_id = ?",
+    args: [myId, peerId],
+  });
+  const row = rs.rows[0] as unknown as {
+    shared_secret: string;
+    sending_chain_key: string;
+    receiving_chain_key: string;
+    send_counter: number;
+    recv_counter: number;
+    previous_send_count: number;
+  } | undefined;
+  if (!row) return undefined;
+  return {
+    ...row,
+    send_counter: n(row.send_counter),
+    recv_counter: n(row.recv_counter),
+    previous_send_count: n(row.previous_send_count),
+  };
 }

@@ -5,7 +5,6 @@ import {
   createMessage,
   isConversationMember,
   listMessages,
-  searchMessagesInConversation,
 } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -26,15 +25,7 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const url = new URL(req.url);
-    const q = (url.searchParams.get("q") ?? "").slice(0, 200).trim();
-
-    let messages;
-    if (q) {
-      messages = await searchMessagesInConversation(conversationId, q);
-    } else {
-      messages = await listMessages(conversationId);
-    }
+    const messages = await listMessages(conversationId);
 
     return NextResponse.json({
       messages: messages.map((m) => ({
@@ -43,6 +34,11 @@ export async function GET(
         text: m.text,
         createdAt: m.created_at,
         isRead: Boolean(m.is_read),
+        ciphertext: m.ciphertext,
+        iv: m.iv,
+        counter: m.counter,
+        ephPub: m.eph_pub,
+        ikPub: m.ik_pub,
       })),
     });
   } catch (error) {
@@ -56,6 +52,11 @@ export async function GET(
 
 const SendBody = z.object({
   text: z.string().trim().min(1).max(4000),
+  ciphertext: z.string().optional(),
+  iv: z.string().optional(),
+  counter: z.number().optional(),
+  ephPub: z.string().optional(),
+  ikPub: z.string().optional(),
 });
 
 export async function POST(
@@ -83,7 +84,16 @@ export async function POST(
       );
     }
 
-    const m = await createMessage(conversationId, auth.userId, parsed.data.text);
+    const m = await createMessage(
+      conversationId,
+      auth.userId,
+      parsed.data.text,
+      parsed.data.ciphertext,
+      parsed.data.iv,
+      parsed.data.counter,
+      parsed.data.ephPub,
+      parsed.data.ikPub
+    );
     if (!m) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
@@ -94,6 +104,11 @@ export async function POST(
         text: m.text,
         createdAt: m.created_at,
         isRead: false,
+        ciphertext: m.ciphertext,
+        iv: m.iv,
+        counter: m.counter,
+        ephPub: m.eph_pub,
+        ikPub: m.ik_pub,
       },
     });
   } catch (error) {

@@ -34,8 +34,26 @@ export function Sidebar({
   const [globalResults, setGlobalResults] = useState<SearchResult[]>([]);
   const [globalSearching, setGlobalSearching] = useState(false);
   const [showGlobalResults, setShowGlobalResults] = useState(false);
+  const [globalPage, setGlobalPage] = useState(1);
+  const [globalHasMore, setGlobalHasMore] = useState(false);
+  const [globalLoadingMore, setGlobalLoadingMore] = useState(false);
+  const [globalClosing, setGlobalClosing] = useState(false);
+  const [globalActiveIndex, setGlobalActiveIndex] = useState(-1);
   const globalSearchRef = useRef<HTMLDivElement>(null);
+  const globalResultsRef = useRef<HTMLDivElement>(null);
   const globalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const globalCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const globalQueryRef = useRef("");
+  const observerRef = useRef<HTMLDivElement>(null);
+
+  /* ---- Result counts per conversation (derived from global search results) ---- */
+  const resultCounts = useMemo(() => {
+    const counts: Record<number, number> = {};
+    for (const r of globalResults) {
+      counts[r.conversationId] = (counts[r.conversationId] || 0) + 1;
+    }
+    return counts;
+  }, [globalResults]);
 
   const filtered = useMemo(() => {
     if (!filter.trim()) return conversations;
@@ -47,24 +65,57 @@ export function Sidebar({
     });
   }, [conversations, filter]);
 
+  /* ---- Animated close for global search (declared before effects that use it) ---- */
+  const closeGlobalResults = useCallback(() => {
+    if (globalCloseTimerRef.current) clearTimeout(globalCloseTimerRef.current);
+    setGlobalActiveIndex(-1);
+    setGlobalClosing(true);
+    globalCloseTimerRef.current = setTimeout(() => {
+      setShowGlobalResults(false);
+      setGlobalClosing(false);
+      setGlobalResults([]);
+      setGlobalQuery("");
+    }, 200);
+  }, []);
+
+  const handleGlobalResultClick = useCallback(
+    (result: SearchResult) => {
+      closeGlobalResults();
+      onJumpToConversation?.(result.conversationId, globalQueryRef.current);
+    },
+    [onJumpToConversation, closeGlobalResults]
+  );
+
   // Hooks for global search (must be before any early return)
   useEffect(() => {
     if (globalTimerRef.current) clearTimeout(globalTimerRef.current);
     const q = globalQuery.trim();
     if (!q || q.length < 2) {
-      setGlobalResults([]);
-      setShowGlobalResults(false);
+      closeGlobalResults();
+      setGlobalPage(1);
+      setGlobalHasMore(false);
       return;
     }
+    // Cancel any pending close animation — new query coming in
+    if (globalCloseTimerRef.current) {
+      clearTimeout(globalCloseTimerRef.current);
+      globalCloseTimerRef.current = null;
+    }
+    setGlobalClosing(false);
+    globalQueryRef.current = q;
+    setGlobalPage(1);
+    setGlobalHasMore(false);
     globalTimerRef.current = setTimeout(async () => {
+      setGlobalActiveIndex(-1);
       setGlobalSearching(true);
       try {
-        const res = await fetch(`/api/messages/search?q=${encodeURIComponent(q)}`, {
+        const res = await fetch(`/api/messages/search?q=${encodeURIComponent(q)}&page=1`, {
           cache: "no-store",
         });
         if (res.ok) {
           const data = await res.json();
           setGlobalResults(data.messages ?? []);
+          setGlobalHasMore(data.hasMore ?? false);
           setShowGlobalResults(true);
         }
       } catch {
@@ -84,22 +135,52 @@ export function Sidebar({
     if (!showGlobalResults) return;
     function handleClick(e: MouseEvent) {
       if (globalSearchRef.current && !globalSearchRef.current.contains(e.target as Node)) {
-        setShowGlobalResults(false);
+        closeGlobalResults();
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [showGlobalResults]);
+  }, [showGlobalResults, closeGlobalResults]);
 
-  const handleGlobalResultClick = useCallback(
-    (result: SearchResult) => {
-      setGlobalQuery("");
-      setGlobalResults([]);
-      setShowGlobalResults(false);
-      onJumpToConversation?.(result.conversationId, globalQuery);
-    },
-    [onJumpToConversation, globalQuery]
-  );
+  const handleLoadMore = useCallback(async () => {
+    const q = globalQueryRef.current;
+    if (!q || q.length < 2 || globalLoadingMore) return;
+    setGlobalLoadingMore(true);
+    const nextPage = globalPage + 1;
+    try {
+      const res = await fetch(`/api/messages/search?q=${encodeURIComponent(q)}&page=${nextPage}`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalResults((prev) => [...prev, ...(data.messages ?? [])]);
+        setGlobalPage(nextPage);
+        setGlobalHasMore(data.hasMore ?? false);
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setGlobalLoadingMore(false);
+    }
+  }, [globalPage, globalLoadingMore]);
+
+  // Infinite scroll via IntersectionObserver
+  useEffect(() => {
+    if (!showGlobalResults || !globalHasMore || globalLoadingMore) return;
+    const el = observerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && globalHasMore && !globalLoadingMore) {
+          handleLoadMore();
+        }
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showGlobalResults, globalHasMore, globalLoadingMore]);
 
   if (conversations.length === 0) {
     return (
@@ -127,6 +208,45 @@ export function Sidebar({
           <input
             value={globalQuery}
             onChange={(e) => setGlobalQuery(e.target.value)}
+            onKeyDown={(e) => {
+              const resultsCount = globalResults.length;
+              if (resultsCount === 0) return;
+              switch (e.key) {
+                case "ArrowDown": {
+                  e.preventDefault();
+                  setGlobalActiveIndex((prev) => {
+                    const next = prev < resultsCount - 1 ? prev + 1 : 0;
+                    // Scroll active item into view
+                    const el = globalResultsRef.current?.querySelector(`[data-gr="${next}"]`);
+                    el?.scrollIntoView({ block: "nearest" });
+                    return next;
+                  });
+                  break;
+                }
+                case "ArrowUp": {
+                  e.preventDefault();
+                  setGlobalActiveIndex((prev) => {
+                    const next = prev > 0 ? prev - 1 : resultsCount - 1;
+                    const el = globalResultsRef.current?.querySelector(`[data-gr="${next}"]`);
+                    el?.scrollIntoView({ block: "nearest" });
+                    return next;
+                  });
+                  break;
+                }
+                case "Enter": {
+                  if (globalActiveIndex >= 0 && globalActiveIndex < resultsCount) {
+                    e.preventDefault();
+                    handleGlobalResultClick(globalResults[globalActiveIndex]);
+                  }
+                  break;
+                }
+                case "Escape": {
+                  e.preventDefault();
+                  closeGlobalResults();
+                  break;
+                }
+              }
+            }}
             placeholder="Search all messages..."
             autoCapitalize="none"
             autoCorrect="off"
@@ -143,25 +263,36 @@ export function Sidebar({
           )}
         </div>
 
-        {/* Global results dropdown */}
-        {showGlobalResults && (
-          <div className="absolute left-3 right-3 mt-1 z-50 rounded-xl border border-zinc-700/60 bg-surface-raised backdrop-blur-xl shadow-elevated overflow-hidden animate-fade-in">
+        {/* Global results dropdown with mount/unmount animation */}
+        {(showGlobalResults || globalClosing) && (
+          <div
+            className={`absolute left-3 right-3 mt-1 z-50 rounded-xl border border-zinc-700/60 bg-surface-raised backdrop-blur-xl shadow-elevated overflow-hidden ${
+              globalClosing ? "animate-fade-out" : "animate-slide-down"
+            }`}
+          >
             {globalResults.length === 0 ? (
               <div className="px-4 py-3 text-center">
                 <p className="text-xs text-zinc-500">No messages match &quot;{globalQuery}&quot;</p>
               </div>
             ) : (
-              <div className="max-h-72 overflow-y-auto py-1">
+              <div ref={globalResultsRef} className="max-h-72 overflow-y-auto py-1">
                 <p className="px-4 py-1.5 text-[10px] font-medium text-zinc-500 uppercase tracking-wider">
                   {globalResults.length} result{globalResults.length !== 1 ? "s" : ""}
                 </p>
-                {globalResults.map((r) => {
+                {globalResults.map((r, i) => {
                   const peerName = r.peer.displayName ?? `@${r.peer.username ?? "user"}`;
                   return (
                     <button
                       key={r.id}
+                      data-gr={i}
                       onClick={() => handleGlobalResultClick(r)}
-                      className="w-full flex items-start gap-3 px-4 py-2.5 text-left hover:bg-zinc-800/40 transition-colors"
+                      onMouseEnter={() => setGlobalActiveIndex(i)}
+                      style={{ animationDelay: `${i * 30}ms` }}
+                      className={`w-full flex items-start gap-3 px-4 py-2.5 text-left transition-colors animate-fade-in ${
+                        i === globalActiveIndex
+                          ? "bg-accent/15 border-l-2 border-accent"
+                          : "hover:bg-zinc-800/40 border-l-2 border-transparent"
+                      }`}
                     >
                       <div className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-accent to-purple-500 grid place-items-center text-white text-[10px] font-semibold mt-0.5">
                         {peerName.charAt(0).toUpperCase()}
@@ -182,6 +313,28 @@ export function Sidebar({
                     </button>
                   );
                 })}
+                {/* Infinite scroll sentinel — only visible when there are more pages to load */}
+                {(globalHasMore || globalLoadingMore) && (
+                  <div ref={observerRef} className="flex items-center justify-center py-3">
+                    {globalLoadingMore && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-3.5 h-3.5 border-2 border-zinc-600/30 border-t-zinc-400 rounded-full animate-spin" />
+                        <span className="text-[10px] text-zinc-500">Loading more…</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* End-of-results indicator */}
+                {!globalHasMore && !globalLoadingMore && globalResults.length > 0 && (
+                  <div className="flex items-center justify-center py-4 px-4">
+                    <div className="flex items-center gap-2 text-zinc-600">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 8.25h15m-16.5 7.5h15m-1.8-13.5l-3.9 19.5m-4.5-19.5l-3.9 19.5" />
+                      </svg>
+                      <span className="text-[10px] font-medium uppercase tracking-wider">No more results</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -222,6 +375,24 @@ export function Sidebar({
         </div>
       )}
 
+      {/* Clear all filters — visible when either search or conversation filter is active */}
+      {(globalQuery.trim().length >= 2 || filter.trim().length > 0) && (
+        <div className="px-3 pb-2">
+          <button
+            onClick={() => {
+              closeGlobalResults();
+              setFilter("");
+            }}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-medium text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40 border border-transparent hover:border-zinc-800/40 transition-all duration-150"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            Clear all filters
+          </button>
+        </div>
+      )}
+
       {/* List */}
       <nav className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5">
         {filtered.length === 0 ? (
@@ -233,6 +404,8 @@ export function Sidebar({
             const isActive = c.id === activeId;
             const name = c.peer.displayName ?? `@${c.peer.username ?? "user"}`;
             const initials = name.slice(0, 1).toUpperCase();
+            const searchCount = resultCounts[c.id];
+            const isSearching = globalQuery.trim().length >= 2;
             return (
               <button
                 key={c.id}
@@ -271,7 +444,13 @@ export function Sidebar({
                         c.unread > 0 ? "text-zinc-300" : "text-zinc-500"
                       }`}
                     >
-                      {previewText(c.lastText)}
+                      {isSearching && searchCount ? (
+                        <span className="text-accent/80">
+                          {searchCount} matching message{searchCount !== 1 ? "s" : ""}
+                        </span>
+                      ) : (
+                        previewText(c.lastText)
+                      )}
                     </p>
                     {c.unread > 0 && (
                       <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-white text-[10px] font-semibold grid place-items-center shadow-glow">
