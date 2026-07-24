@@ -3,6 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ChatMessage, Conversation } from "@/lib/types";
+import {
+  generateIdentityBundle,
+  loadIdentity,
+  initSessionWithPeer,
+  getOrCreateSession,
+  encryptMessage,
+  decryptMessage,
+  type IdentityKeyBundle,
+  type RatchetSession,
+} from "@/lib/e2e";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -87,6 +97,8 @@ export function ConversationView({
   const optimisticIdRef = useRef<number>(-2);
   const sendingRef = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
+  const identityRef = useRef<IdentityKeyBundle | null>(null);
+  const sessionRef = useRef<RatchetSession | null>(null);
 
   const peerName =
     conversation.peer.displayName ?? `@${conversation.peer.username ?? "user"}`;
@@ -100,6 +112,45 @@ export function ConversationView({
   }, []);
 
   useEffect(resizeTextarea, [text, resizeTextarea]);
+
+  /* ---- Init E2E keys ---- */
+  useEffect(() => {
+    let cancelled = false;
+    async function initKeys() {
+      if (cancelled) return;
+      try {
+        let identity = await loadIdentity(meId);
+        if (!identity) {
+          const { local, serverPayload } = await generateIdentityBundle(meId);
+          if (cancelled) return;
+          identity = local;
+          await fetch("/api/keys/bundle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(serverPayload),
+          });
+        }
+        identityRef.current = identity;
+        try {
+          let session = await getOrCreateSession(meId, conversation.peer.id);
+          if (!session) {
+            const res = await fetch(`/api/keys/bundle?userId=${conversation.peer.id}`);
+            if (res.ok) {
+              const peerKeys = await res.json();
+              session = await initSessionWithPeer(meId, conversation.peer.id, peerKeys.identityPub, peerKeys.signedPrekeyPub);
+            }
+          }
+          if (session && !cancelled) sessionRef.current = session;
+        } catch (e) {
+          console.warn("E2E session init failed:", e);
+        }
+      } catch (e) {
+        console.warn("E2E key init failed:", e);
+      }
+    }
+    initKeys();
+    return () => { cancelled = true; };
+  }, [meId, conversation.peer.id]);
 
   /* ---- Fetch & poll ---- */
   useEffect(() => {
@@ -165,7 +216,17 @@ export function ConversationView({
         }
         if (!res.ok) return null;
         const data = await res.json();
-        return data.messages as ChatMessage[];
+        const serverMessages = data.messages as (ChatMessage & { ciphertext?: string | null; iv?: string | null; counter?: number | null })[];
+        const session = sessionRef.current;
+        if (session) {
+          for (const msg of serverMessages) {
+            if (msg.ciphertext && msg.iv && msg.counter !== null && msg.counter !== undefined) {
+              try { msg.text = await decryptMessage(session, msg.ciphertext, msg.iv, msg.counter); }
+              catch { msg.text = "[Encrypted message]"; }
+            }
+          }
+        }
+        return serverMessages;
       } catch {
         return null;
       }

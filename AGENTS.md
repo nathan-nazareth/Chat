@@ -1,6 +1,6 @@
 # Chat
 
-Next.js 14 (App Router) + TypeScript + Tailwind + Turso (libSQL) for the database. Email+OTP auth via Resend (or console-logged in dev), plus password sign-in. Iron-session cookies.
+Next.js 14 (App Router) + TypeScript + Tailwind. Local file SQLite database (`.data/chat.db`) via `@libsql/client` — no external DB service needed. Email+OTP auth via Resend (or console-logged in dev), plus password sign-in. Iron-session cookies.
 
 ## Run
 
@@ -10,16 +10,17 @@ npm install
 npm run dev
 ```
 
-Visit http://localhost:3000. In dev without `TURSO_DATABASE_URL`, the app falls back to a local file DB at `.data/chat.db`.
+Visit http://localhost:3000. The database is a local file at `.data/chat.db` — no setup needed.
 
 ## Deploy (Vercel)
 
 Set these env vars in the Vercel project settings:
 
 - `SESSION_PASSWORD` (32+ chars)
-- `TURSO_DATABASE_URL` (required — `libsql://...`)
-- `TURSO_AUTH_TOKEN`
 - `RESEND_API_KEY`, `RESEND_FROM` (optional; without these, OTPs are logged)
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (optional; for push notifications)
+
+**Note**: The app uses a local file database, which does not persist on Vercel serverless. For production use, consider mounting a persistent volume or re-adding a remote database.
 
 ## Scripts
 
@@ -42,11 +43,11 @@ OTPs are logged to the dev-server console and returned in the `/api/otp/send` re
 - `app/api/conversations` — list and create DM conversations
 - `app/api/conversations/[id]/messages` — list and send messages
 - `components/ChatApp.tsx`, `Sidebar.tsx`, `ConversationView.tsx`, `NewChatModal.tsx` — chat UI
-- `lib/db.ts` — Turso schema + async queries
+- `lib/db.ts` — SQLite schema + async queries
 - `lib/otp.ts` — code gen, hashing, email send
 - `lib/session.ts` — iron-session config
 
 ## Notes
 
-- All `lib/db.ts` functions are async (Turso client). Awaiting `ensureSchema()` lazily on first call runs migrations.
+- All `lib/db.ts` functions are async (libSQL client). Awaiting `ensureSchema()` lazily on first call runs migrations.
 - New-message delivery within an open conversation uses 4s polling (`ConversationView.tsx`). The sidebar does not live-update; reload to see fresh previews.

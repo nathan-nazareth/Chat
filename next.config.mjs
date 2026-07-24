@@ -18,7 +18,7 @@ const withSerwist = withSerwistInit({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ["@libsql/client"],
+    serverComponentsExternalPackages: ["@libsql/client", "web-push"],
   },
 };
 

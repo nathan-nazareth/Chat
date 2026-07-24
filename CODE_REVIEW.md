@@ -40,7 +40,7 @@ When `RESEND_API_KEY` is set but Resend fails (quota, invalid recipient), the ra
 
 Each Vercel function instance has its own `Map`. 20 concurrent requests hit 20 different instances, each seeing only 1 request. All rate limits are effectively bypassed.
 
-**Fix**: Use Redis/Upstash/Turso-backed rate limiter for production.
+**Fix**: Use a persistent store-backed rate limiter for production.
 
 ### H3. Missing top-level try-catch in otp/verify
 **File**: `app/api/otp/verify/route.ts`

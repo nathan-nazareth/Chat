@@ -2,6 +2,8 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import { PwaProvider } from "@/components/PwaProvider";
 import { InstallBanner } from "@/components/InstallBanner";
+import { SplashScreen } from "@/components/SplashScreen";
+import { UpdateNotification } from "@/components/UpdateNotification";
 
 const APP_NAME = "Chat";
 const APP_DEFAULT_TITLE = "Chat";
@@ -25,6 +27,11 @@ export const metadata: Metadata = {
     address: false,
   },
   manifest: "/manifest.webmanifest",
+  icons: {
+    apple: [
+      { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
   openGraph: {
     type: "website",
     siteName: APP_NAME,
@@ -49,8 +56,18 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" dir="ltr" suppressHydrationWarning>
+      <head>
+        <meta name="mobile-web-app-capable" content="yes" />
+        <link
+          rel="apple-touch-startup-image"
+          href="/icons/icon-512x512.png"
+          media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)"
+        />
+      </head>
       <body className="antialiased">
         <PwaProvider>
+          <SplashScreen />
+          <UpdateNotification />
           {children}
           <InstallBanner />
         </PwaProvider>

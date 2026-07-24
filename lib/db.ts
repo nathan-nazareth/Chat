@@ -2,20 +2,9 @@ import { createClient, type Client } from "@libsql/client";
 import path from "node:path";
 import fs from "node:fs";
 
-const isVercel = process.env.VERCEL === "1";
-
 let _client: Client | null = null;
 function getClient(): Client {
   if (_client) return _client;
-  const url = process.env.TURSO_DATABASE_URL;
-  const authToken = process.env.TURSO_AUTH_TOKEN;
-  if (url) {
-    _client = createClient({ url, authToken });
-    return _client;
-  }
-  if (isVercel || process.env.NODE_ENV === "production") {
-    throw new Error("TURSO_DATABASE_URL is required in production");
-  }
   const dataDir = path.join(process.cwd(), ".data");
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   _client = createClient({ url: `file:${path.join(dataDir, "chat.db")}` });
@@ -43,9 +32,6 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_otps_email_purpose ON otps(email, purpose)`,
-  // At most one unconsumed, unexpired OTP per (email, purpose) at a time.
-  // Without this, two concurrent createOtp calls can each see "no active row"
-  // inside their transactions and both insert, leaving multiple valid codes.
   `CREATE UNIQUE INDEX IF NOT EXISTS uniq_otps_active
      ON otps(email, purpose) WHERE consumed_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS conversations (
@@ -92,12 +78,16 @@ const SCHEMA = [
     updated_at             INTEGER NOT NULL,
     PRIMARY KEY (my_id, peer_id)
   )`,
-  // Migrations for existing databases — safe to run repeatedly.
-  `ALTER TABLE messages ADD COLUMN ciphertext TEXT`,
-  `ALTER TABLE messages ADD COLUMN iv TEXT`,
-  `ALTER TABLE messages ADD COLUMN counter INTEGER`,
-  `ALTER TABLE messages ADD COLUMN eph_pub TEXT`,
-  `ALTER TABLE messages ADD COLUMN ik_pub TEXT`,
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint      TEXT NOT NULL,
+    p256dh        TEXT NOT NULL,
+    auth          TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    UNIQUE (user_id, endpoint)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id)`,
 ];
 
 let initPromise: Promise<void> | null = null;
@@ -108,7 +98,6 @@ function ensureSchema(): Promise<void> {
         try {
           await getClient().execute(stmt);
         } catch (err: any) {
-          // Ignore "duplicate column" errors from ALTER TABLE (migration already applied)
           if (err?.message?.includes("duplicate column")) continue;
           throw err;
         }
@@ -178,13 +167,6 @@ export async function setProfile(
   username: string
 ): Promise<boolean> {
   await ensureSchema();
-  // Require a password before letting the profile be finalized. The
-  // passwordless signup flow leaves password_hash NULL until the user
-  // completes /api/auth/signup-password; without this guard, a user could
-  // skip the password step (e.g., by closing the browser) and reach a
-  // "profile_complete && no password" state from which they could never
-  // sign in again (password signin needs a hash; signin OTP is blocked for
-  // passwordless accounts; signup OTP is blocked once the profile is done).
   const result = await getClient().execute({
     sql: "UPDATE users SET display_name = ?, username = ?, profile_completed_at = ? WHERE id = ? AND profile_completed_at IS NULL AND password_hash IS NOT NULL",
     args: [displayName, username.toLowerCase(), Date.now(), userId],
@@ -203,11 +185,6 @@ export async function createOtp(
   const normalizedEmail = email.toLowerCase();
   const tx = await getClient().transaction("write");
   try {
-    // Invalidate any still-active OTPs for this email+purpose so the freshly
-    // generated code is the only one that will be accepted. Without this,
-    // prior codes remain "active" in the DB and a user re-submitting an old
-    // code (e.g., after a resend) would receive a confusing "Invalid code"
-    // error — verification only inspects the most recent OTP row.
     await tx.execute({
       sql: "UPDATE otps SET consumed_at = ? WHERE email = ? AND purpose = ? AND consumed_at IS NULL",
       args: [now, normalizedEmail, purpose],
@@ -306,11 +283,6 @@ export async function completeSignup(
     if (claimed.rowsAffected !== 1) return { status: "invalid_otp" };
 
     if (passwordHash === null) {
-      // Mark the email verified on insert. The OTP was already claimed at the
-      // top of this transaction, so we know the address belongs to the caller.
-      // Without this, passwordless signups leave email_verified_at NULL until
-      // the user later sets a password (which COALESCE-sets it), making the
-      // column's semantics "verified-AND-has-password" instead of "verified".
       const rs = await tx.execute({
         sql: `INSERT INTO users (email, email_verified_at, created_at)
               VALUES (?, ?, ?)
@@ -326,8 +298,6 @@ export async function completeSignup(
         });
         row = existing.rows[0] as unknown as User | undefined;
       }
-      // Check the row state inside the transaction, before commit, so a
-      // concurrent insert/update can't slip between commit and the check.
       if (!row || row.password_hash || row.profile_completed_at) {
         await tx.commit();
         return { status: "account_exists" };
@@ -354,8 +324,6 @@ export async function completeSignup(
       });
       row = updated.rows[0] as unknown as User | undefined;
     }
-    // Check the row state inside the transaction, before commit, so a
-    // concurrent insert/update can't slip between commit and the check.
     if (!row) return { status: "account_exists" };
     await tx.commit();
     return { status: "ok", user: { ...row, id: n(row.id) } };
@@ -366,8 +334,6 @@ export async function completeSignup(
 
 // ---------- Search / conversations / messages ----------
 
-// Raw DB row shape for the public-facing subset of users. Distinct from the
-// camelCase API type in `@/lib/types`; the API route is the translation point.
 type PublicUserRow = {
   id: number;
   display_name: string | null;
@@ -404,10 +370,6 @@ export async function searchUsers(
   await ensureSchema();
   const q = query.trim().toLowerCase().replace(/^@/, "");
   if (!q) return [];
-  // Escape `\`, `%`, and `_` so the LIKE pattern matches the user's literal
-  // input. Without escaping `\`, a literal backslash in the query would be
-  // interpreted as the SQL escape character and match arbitrary chars (so a
-  // search for "foo\bar" would match "foobar", "fooXbar", etc.).
   const like = `%${q.replace(/[\\%_]/g, (m) => "\\" + m)}%`;
   const rs = await getClient().execute({
     sql: `SELECT id, display_name, username FROM users
@@ -454,9 +416,6 @@ export async function createConversation(
   if (a === b) throw new Error("Cannot create conversation with self");
   const [userA, userB] = a < b ? [a, b] : [b, a];
   const now = Date.now();
-  // Run the INSERT and the lookup inside a single write transaction so the
-  // follow-up SELECT is guaranteed to observe the just-inserted row, even on
-  // a read replica with read-your-writes disabled (libsql HTTP client).
   const tx = await getClient().transaction("write");
   try {
     await tx.execute({
@@ -493,13 +452,6 @@ export async function listConversations(
   userId: number
 ): Promise<ConversationWithPeer[]> {
   await ensureSchema();
-  // Single-pass aggregate via window functions so the per-row work is O(1)
-  // regardless of conversation count. The previous correlated-subquery
-  // form ran 2*N subqueries (last_text + unread), which degrades quickly
-  // once a user has dozens of conversations. We materialize the unread
-  // total for *my* conversations in a CTE (filtered once) and then LEFT
-  // JOIN, so the cost is one sequential scan over `messages` rather than
-  // N index seeks.
   const rs = await getClient().execute({
     sql: `WITH mine AS (
             SELECT id FROM conversations
@@ -594,6 +546,27 @@ export async function isConversationMember(
   return n(row.user_a_id) === userId || n(row.user_b_id) === userId;
 }
 
+export async function getConversationPeer(
+  conversationId: number,
+  userId: number
+): Promise<{ peerId: number; peerName: string | null } | undefined> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: `SELECT
+            CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END AS peer_id,
+            u.display_name AS peer_name
+          FROM conversations c
+          JOIN users u ON u.id = CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END
+          WHERE c.id = ? AND (c.user_a_id = ? OR c.user_b_id = ?)`,
+    args: [userId, userId, conversationId, userId, userId],
+  });
+  const row = rs.rows[0] as unknown as
+    | { peer_id: number; peer_name: string | null }
+    | undefined;
+  if (!row) return undefined;
+  return { peerId: n(row.peer_id), peerName: row.peer_name };
+}
+
 export async function listMessages(
   conversationId: number,
   limit = 200
@@ -629,9 +602,6 @@ export async function listAndMarkRead(
   await ensureSchema();
   const tx = await getClient().transaction("write");
   try {
-    // Mark unread messages read first so the returned `is_read` flags are
-    // already accurate on the very first poll — no 4 s flicker on the
-    // badge. The list is then guaranteed to reflect the post-read state.
     const marked = await tx.execute({
       sql: `UPDATE messages SET is_read = 1
             WHERE conversation_id = ? AND sender_id != ? AND is_read = 0`,
@@ -666,9 +636,6 @@ export async function listAndMarkRead(
   }
 }
 
-// Lightweight mark-read for the sidebar: just flip unread→read without
-// returning the message list. Keeps the per-poll cost low when the
-// conversation view is also polling messages independently.
 export async function markRead(
   conversationId: number,
   userId: number
@@ -934,4 +901,56 @@ export async function getRatchetSession(
     recv_counter: n(row.recv_counter),
     previous_send_count: n(row.previous_send_count),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Push subscriptions
+// ---------------------------------------------------------------------------
+
+export type PushSubscriptionRow = {
+  id: number;
+  user_id: number;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  created_at: number;
+};
+
+export async function addPushSubscription(
+  userId: number,
+  endpoint: string,
+  p256dh: string,
+  auth: string
+): Promise<void> {
+  await ensureSchema();
+  await getClient().execute({
+    sql: `INSERT OR IGNORE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)
+          VALUES (?, ?, ?, ?, ?)`,
+    args: [userId, endpoint, p256dh, auth, Date.now()],
+  });
+}
+
+export async function removePushSubscription(
+  userId: number,
+  endpoint: string
+): Promise<void> {
+  await ensureSchema();
+  await getClient().execute({
+    sql: "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
+    args: [userId, endpoint],
+  });
+}
+
+export async function getPushSubscriptions(
+  userId: number
+): Promise<PushSubscriptionRow[]> {
+  await ensureSchema();
+  const rs = await getClient().execute({
+    sql: "SELECT * FROM push_subscriptions WHERE user_id = ?",
+    args: [userId],
+  });
+  return rs.rows.map((r) => {
+    const row = r as unknown as PushSubscriptionRow;
+    return { ...row, id: n(row.id), user_id: n(row.user_id) };
+  });
 }

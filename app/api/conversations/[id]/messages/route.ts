@@ -10,112 +10,81 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  try {
-    const auth = await requireUser();
-    if (auth.error) return auth.error;
+  const auth = await requireUser();
+  if (auth.error) return auth.error;
 
-    const conversationId = Number(params.id);
-    if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
-      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-    }
-    if (!(await isConversationMember(conversationId, auth.userId))) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
-
-    const messages = await listMessages(conversationId);
-
-    return NextResponse.json({
-      messages: messages.map((m) => ({
-        id: m.id,
-        senderId: m.sender_id,
-        text: m.text,
-        createdAt: m.created_at,
-        isRead: Boolean(m.is_read),
-        ciphertext: m.ciphertext,
-        iv: m.iv,
-        counter: m.counter,
-        ephPub: m.eph_pub,
-        ikPub: m.ik_pub,
-      })),
-    });
-  } catch (error) {
-    console.error("[ERROR] [conversations/messages GET] unhandled error:", error);
-    return NextResponse.json(
-      { error: "Something went wrong." },
-      { status: 500 }
-    );
+  const conversationId = Number(params.id);
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
+  if (!(await isConversationMember(conversationId, auth.userId))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const messages = await listMessages(conversationId);
+  return NextResponse.json({
+    messages: messages.map((m) => ({
+      id: m.id,
+      senderId: m.sender_id,
+      text: m.text,
+      createdAt: m.created_at,
+      isRead: Boolean(m.is_read),
+    })),
+  });
+}
+
+// PATCH is intentionally not implemented: mark-read has its own dedicated
+// route at /api/conversations/[id]/read so the sidebar can ping it on
+// every conversation open without loading the full message list. Older
+// clients calling PATCH get a clean 405 instead of a confusing 404.
+export function PATCH() {
+  return NextResponse.json(
+    { error: "Use POST /api/conversations/[id]/read" },
+    { status: 405, headers: { Allow: "GET, POST" } }
+  );
 }
 
 const SendBody = z.object({
   text: z.string().trim().min(1).max(4000),
-  ciphertext: z.string().optional(),
-  iv: z.string().optional(),
-  counter: z.number().optional(),
-  ephPub: z.string().optional(),
-  ikPub: z.string().optional(),
 });
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  try {
-    const auth = await requireUser();
-    if (auth.error) return auth.error;
+  const auth = await requireUser();
+  if (auth.error) return auth.error;
 
-    const conversationId = Number(params.id);
-    if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
-      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-    }
-    if (!(await isConversationMember(conversationId, auth.userId))) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
+  const conversationId = Number(params.id);
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+  if (!(await isConversationMember(conversationId, auth.userId))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
-    const json = await req.json().catch(() => null);
-    const parsed = SendBody.safeParse(json);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: parsed.error.issues[0]?.message || "Invalid input" },
-        { status: 400 }
-      );
-    }
-
-    const m = await createMessage(
-      conversationId,
-      auth.userId,
-      parsed.data.text,
-      parsed.data.ciphertext,
-      parsed.data.iv,
-      parsed.data.counter,
-      parsed.data.ephPub,
-      parsed.data.ikPub
-    );
-    if (!m) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
-    return NextResponse.json({
-      message: {
-        id: m.id,
-        senderId: m.sender_id,
-        text: m.text,
-        createdAt: m.created_at,
-        isRead: false,
-        ciphertext: m.ciphertext,
-        iv: m.iv,
-        counter: m.counter,
-        ephPub: m.eph_pub,
-        ikPub: m.ik_pub,
-      },
-    });
-  } catch (error) {
-    console.error("[ERROR] [conversations/messages POST] unhandled error:", error);
+  const json = await req.json().catch(() => null);
+  const parsed = SendBody.safeParse(json);
+  if (!parsed.success) {
     return NextResponse.json(
-      { error: "Something went wrong." },
-      { status: 500 }
+      { error: parsed.error.issues[0]?.message || "Invalid input" },
+      { status: 400 }
     );
   }
+
+  const m = await createMessage(conversationId, auth.userId, parsed.data.text);
+  if (!m) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  return NextResponse.json({
+    message: {
+      id: m.id,
+      senderId: m.sender_id,
+      text: m.text,
+      createdAt: m.created_at,
+      isRead: false,
+    },
+  });
 }

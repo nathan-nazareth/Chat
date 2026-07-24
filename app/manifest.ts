@@ -9,13 +9,14 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
-    display_override: ["standalone"],
+    display_override: ["standalone", "minimal-ui"],
     orientation: "any",
     background_color: "#0a0a0c",
     theme_color: "#0a0a0c",
-    categories: ["social", "communication"],
+    categories: ["social", "communication", "productivity"],
     lang: "en",
     dir: "ltr",
+    prefer_related_applications: false,
     icons: [
       {
         src: "/icon.svg",
@@ -46,11 +47,25 @@ export default function manifest(): MetadataRoute.Manifest {
         sizes: "180x180",
         type: "image/png",
       },
+    ],
+    shortcuts: [
       {
-        src: "/favicon.ico",
-        sizes: "32x32",
-        type: "image/x-icon",
+        name: "New chat",
+        short_name: "New",
+        description: "Start a new conversation",
+        url: "/?action=new",
+        icons: [{ src: "/icons/icon-192x192.png", sizes: "192x192" }],
       },
     ],
+    share_target: {
+      action: "/share",
+      method: "post",
+      enctype: "multipart/form-data",
+      params: {
+        title: "title",
+        text: "text",
+        url: "url",
+      } as any,
+    },
   };
 }

@@ -9,6 +9,7 @@ import { NewChatModal } from "@/components/NewChatModal";
 import { SignOutButton } from "@/components/SignOutButton";
 import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { InstallButton } from "@/components/InstallButton";
+import { NotificationButton } from "@/components/NotificationButton";
 
 type Me = {
   id: number;
@@ -32,6 +33,7 @@ export function ChatApp({
   const [showNew, setShowNew] = useState(false);
   const activeIdRef = useRef(activeId);
   const conversationVersionRef = useRef(0);
+  const prevUnreadRef = useRef<Map<number, number>>(new Map());
 
   const active = conversations.find((c) => c.id === activeId) ?? null;
 
@@ -98,6 +100,27 @@ export function ChatApp({
           );
         setConversations(next);
         consecutiveFailures = 0;
+
+        // Fire local notifications for new unread messages when the tab is hidden.
+        if (
+          document.hidden &&
+          typeof Notification !== "undefined" &&
+          Notification.permission === "granted"
+        ) {
+          for (const conv of next) {
+            const prev = prevUnreadRef.current.get(conv.id) ?? 0;
+            if (conv.id !== currentActiveId && conv.unread > prev) {
+              const name = conv.peer.displayName ?? `@${conv.peer.username ?? "user"}`;
+              void showLocalNotification(name, conv.lastText ?? "New message", conv.id);
+            }
+          }
+        }
+        prevUnreadRef.current = new Map(next.map((c) => [c.id, c.unread]));
+
+        // Update the app icon badge (Badge API).
+        const totalUnread = next.reduce((sum, c) => sum + c.unread, 0);
+        updateAppBadge(totalUnread);
+
         schedule(5_000);
       } catch {
         if (cancelled) return;
@@ -129,6 +152,24 @@ export function ChatApp({
       if (timeout) clearTimeout(timeout);
     };
   }, [router]);
+
+  // Update the app icon badge whenever conversations change.
+  useEffect(() => {
+    const totalUnread = conversations.reduce((sum, c) => sum + c.unread, 0);
+    updateAppBadge(totalUnread);
+  }, [conversations]);
+
+  // Handle PWA shortcuts and share target via URL params.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("action") === "new" || params.get("shared_text")) {
+      setShowNew(true);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("action");
+      url.searchParams.delete("shared_text");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   function handleSelect(id: number) {
     conversationVersionRef.current += 1;
@@ -218,6 +259,7 @@ export function ChatApp({
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              <NotificationButton />
               <InstallButton />
               <SignOutButton compact />
             </div>
@@ -317,3 +359,37 @@ function EmptyState({ onNew, meName }: { onNew: () => void; meName?: string }) {
 }
 
 export type { ChatMessage, Conversation, PublicUser };
+
+function showLocalNotification(
+  title: string,
+  body: string,
+  conversationId: number
+) {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.ready
+      .then((reg) =>
+        reg.showNotification(title, {
+          body,
+          icon: "/icons/icon-192x192.png",
+          badge: "/icons/icon-192x192.png",
+          tag: `conv-${conversationId}`,
+          data: { conversationId },
+        })
+      )
+      .catch(() => {});
+  }
+}
+
+function updateAppBadge(count: number) {
+  const nav = navigator as Navigator & {
+    setAppBadge?: (n?: number) => Promise<void>;
+    clearAppBadge?: () => Promise<void>;
+  };
+  if (typeof nav.setAppBadge === "function") {
+    if (count > 0) {
+      nav.setAppBadge(count).catch(() => {});
+    } else {
+      nav.clearAppBadge?.().catch(() => {});
+    }
+  }
+}
